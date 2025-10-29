@@ -163,18 +163,6 @@ EzySubs-App/
 
 ---
 
-## 📸 Screenshots *(optional for later)*
-
-> Add your UI mockups or Expo screenshots here:
->
-> ```
-> assets/images/home-basketball.png
-> assets/onboarding/instruction1.png
-> ...
-> ```
-
----
-
 ## ⚖️ License
 
 ```
