@@ -238,19 +238,12 @@ export default function LineupScreen() {
             </Text>
           </View>
 
-          <View style={styles.scrollHintRow}>
-            <View style={styles.scrollHintLine} />
-            <Ionicons
-              name="chevron-down"
-              size={14}
-              color={COLORS.textMuted}
-              style={{ marginHorizontal: 6 }}
-            />
-            <Text style={styles.scrollHintText}>Scroll to view entire roster</Text>
-            <View style={styles.scrollHintLine} />
-          </View>
-
           <View style={styles.gridCard}>
+            <View pointerEvents="none" style={styles.scrollRail}>
+              <View style={styles.scrollRailTrack}>
+                <View style={styles.scrollRailThumb} />
+              </View>
+            </View>
             {loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator color={COLORS.accent} />
@@ -469,30 +462,33 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginLeft: 12,
   },
-  scrollHintRow: {
-    flexDirection: "row",
-    alignItems: "center",
+  scrollRail: {
+    position: "absolute",
+    top: 12,
+    bottom: 12,
+    right: 0,
     justifyContent: "center",
-    marginTop: -4,
-    marginBottom: 12,
+    alignItems: "center",
   },
-  scrollHintLine: {
+  scrollRailTrack: {
+    width: 4,
     flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: COLORS.divider,
+    borderRadius: 2,
+    backgroundColor: "rgba(15,23,42,0.08)",
+    justifyContent: "center",
+    alignItems: "center",
   },
-  scrollHintText: {
-    marginHorizontal: 8,
-    fontSize: 11,
-    fontWeight: "600",
-    color: COLORS.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0.9,
+  scrollRailThumb: {
+    width: 4,
+    height: 28,
+    borderRadius: 2,
+    backgroundColor: "rgba(15,23,42,0.25)",
   },
   gridCard: {
     flex: 1,
     paddingHorizontal: 6,
     paddingTop: 6,
+    position: "relative",
   },
   gridRow: {
     justifyContent: "space-between",
@@ -590,6 +586,8 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     paddingHorizontal: 20,
     backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: "rgba(37,99,235,0.18)",
     shadowColor: "rgba(15,23,42,0.08)",
     shadowOpacity: 0.06,
     shadowRadius: 14,
