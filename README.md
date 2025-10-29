@@ -189,16 +189,6 @@ Rebuilt as a mobile app for educational and client demonstration purposes.
 This repository is published publicly for academic and portfolio display only.
 Commercial use, redistribution, or modification without written permission from Maikazconsult is strictly prohibited.
 ```
-
----
-
-## 📬 Contact
-
-**Project Lead:** Kaluarachchige Dimashi Gunasinghe
-📧 [dimzii@Dimashis-MacBook-Pro.local](mailto:dimzii@Dimashis-MacBook-Pro.local)
-🌐 [GitHub – dimashiii](https://github.com/dimashiii)
-📍 Perth, Western Australia
-
 ---
 
 > 💬 *“Built for the court, designed for the coach.”*
