@@ -27,10 +27,10 @@ const KEYS = {
 
 const LAYOUT = {
   pad: 24,
-  gap: 18,
-  avatar: 66,
+  gap: 16,
+  avatar: 54,
   avatarRing: 2,
-  stripAvatar: 58,
+  stripAvatar: 54,
 };
 
 const COLORS = {
@@ -162,40 +162,22 @@ export default function LineupScreen() {
     return (
       <Pressable
         onPress={() => toggleStarter(p.id)}
-        style={[
-          styles.playerTile,
-          isStarter && styles.playerTileSelected,
-        ]}
-        android_ripple={{ color: "rgba(15,23,42,0.08)" }}
+        style={styles.playerTile}
+        android_ripple={{ color: "rgba(15,23,42,0.06)" }}
       >
-        <View
-          style={[
-            styles.avatar,
-            isStarter && styles.avatarSelected,
-          ]}
-        >
+        <View style={[styles.avatar, isStarter && styles.avatarSelected]}>
           <Text style={styles.avatarInitial}>
             {p.name.trim()[0]?.toUpperCase() || "A"}
           </Text>
+          {isStarter ? (
+            <View style={styles.avatarBadge}>
+              <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+            </View>
+          ) : null}
         </View>
         <Text style={styles.playerName} numberOfLines={1}>
           {p.name}
         </Text>
-        {isStarter ? (
-          <View style={styles.starterTag}>
-            <Ionicons
-              name="checkmark-circle"
-              size={14}
-              color={COLORS.success}
-              style={{ marginRight: 4 }}
-            />
-            <Text style={styles.starterTagText}>Starter</Text>
-          </View>
-        ) : (
-          <View style={styles.benchTag}>
-            <Text style={styles.benchTagText}>Bench</Text>
-          </View>
-        )}
       </Pressable>
     );
   };
@@ -215,9 +197,6 @@ export default function LineupScreen() {
             </Pressable>
             <View style={styles.headerTextWrap}>
               <Text style={styles.heading}>Starting lineup</Text>
-              <Text style={styles.subtitle}>
-                Tap to choose up to five who open the game.
-              </Text>
             </View>
             <Pressable
               onPress={clearStarters}
@@ -259,6 +238,18 @@ export default function LineupScreen() {
             </Text>
           </View>
 
+          <View style={styles.scrollHintRow}>
+            <View style={styles.scrollHintLine} />
+            <Ionicons
+              name="chevron-down"
+              size={14}
+              color={COLORS.textMuted}
+              style={{ marginHorizontal: 6 }}
+            />
+            <Text style={styles.scrollHintText}>Scroll to view entire roster</Text>
+            <View style={styles.scrollHintLine} />
+          </View>
+
           <View style={styles.gridCard}>
             {loading ? (
               <View style={styles.loadingWrap}>
@@ -281,7 +272,7 @@ export default function LineupScreen() {
               <FlatList
                 data={players}
                 keyExtractor={(item) => item.id}
-                numColumns={2}
+                numColumns={3}
                 columnWrapperStyle={styles.gridRow}
                 contentContainerStyle={styles.gridContent}
                 showsVerticalScrollIndicator={false}
@@ -478,25 +469,38 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginLeft: 12,
   },
+  scrollHintRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  scrollHintLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.divider,
+  },
+  scrollHintText: {
+    marginHorizontal: 8,
+    fontSize: 11,
+    fontWeight: "600",
+    color: COLORS.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.9,
+  },
   gridCard: {
     flex: 1,
-    borderRadius: 20,
-    backgroundColor: COLORS.card,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 6,
-    shadowColor: "rgba(15,23,42,0.12)",
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 4,
+    paddingHorizontal: 6,
+    paddingTop: 6,
   },
   gridRow: {
     justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: LAYOUT.gap,
   },
   gridContent: {
-    paddingBottom: 12,
+    paddingBottom: 24,
   },
   loadingWrap: {
     alignItems: "center",
@@ -521,23 +525,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   playerTile: {
-    flex: 1,
-    borderRadius: 18,
-    paddingVertical: 16,
-    paddingHorizontal: 14,
-    backgroundColor: COLORS.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: COLORS.tileBorder,
-    shadowColor: "rgba(15,23,42,0.05)",
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 2,
-  },
-  playerTileSelected: {
-    borderColor: COLORS.success,
-    backgroundColor: COLORS.successSoft,
-    shadowColor: "rgba(34,197,94,0.25)",
+    width: "30%",
+    alignItems: "center",
+    marginBottom: LAYOUT.gap,
   },
   avatar: {
     width: LAYOUT.avatar,
@@ -548,55 +538,40 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: COLORS.accentSoft,
     borderWidth: LAYOUT.avatarRing,
-    borderColor: "transparent",
+    borderColor: COLORS.accent,
   },
   avatarSelected: {
     backgroundColor: COLORS.successSoft,
     borderColor: COLORS.success,
   },
+  avatarBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: COLORS.success,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   avatarInitial: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "700",
     color: COLORS.text,
   },
   playerName: {
-    fontSize: 15,
+    marginTop: 6,
+    fontSize: 13,
     fontWeight: "600",
     color: COLORS.text,
-  },
-  starterTag: {
-    marginTop: 10,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: COLORS.successSoft,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  starterTagText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: COLORS.success,
-  },
-  benchTag: {
-    marginTop: 10,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: COLORS.accentSoft,
-  },
-  benchTagText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: COLORS.accent,
+    textAlign: "center",
   },
   toast: {
     position: "absolute",
-    left: 18,
-    right: 18,
-    bottom: 16,
+    left: 16,
+    right: 16,
+    bottom: 12,
     flexDirection: "row",
     alignItems: "center",
     borderRadius: 12,
@@ -610,48 +585,48 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   lineupCard: {
-    marginTop: 24,
-    borderRadius: 20,
+    marginTop: 20,
+    borderRadius: 18,
     paddingVertical: 18,
     paddingHorizontal: 20,
     backgroundColor: COLORS.card,
-    shadowColor: "rgba(15,23,42,0.12)",
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 4,
+    shadowColor: "rgba(15,23,42,0.08)",
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
   },
   lineupHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 16,
+    marginBottom: 14,
   },
   lineupLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: COLORS.text,
   },
   lineupBadge: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: COLORS.successSoft,
   },
   lineupBadgeText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
     color: COLORS.success,
   },
   lineupFive: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 18,
+    marginBottom: 14,
   },
   slot: {
-    width: (LAYOUT.stripAvatar * 1.2),
+    width: LAYOUT.stripAvatar,
     alignItems: "center",
   },
   stripAvatar: {
@@ -663,10 +638,10 @@ const styles = StyleSheet.create({
     borderColor: COLORS.success,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: 6,
   },
   stripInitial: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     color: COLORS.text,
   },
@@ -674,17 +649,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.text,
     fontWeight: "600",
+    textAlign: "center",
   },
   placeholder: {
     width: LAYOUT.stripAvatar,
     height: LAYOUT.stripAvatar,
     borderRadius: LAYOUT.stripAvatar / 2,
-    backgroundColor: COLORS.accentSoft,
-    alignItems: "center",
-    justifyContent: "center",
     borderWidth: 2,
     borderColor: COLORS.divider,
-    marginBottom: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.accentSoft,
+    marginBottom: 6,
   },
   placeholderLabel: {
     fontSize: 11,
@@ -693,7 +669,7 @@ const styles = StyleSheet.create({
   goButton: {
     marginTop: 4,
     backgroundColor: COLORS.accent,
-    borderRadius: 16,
+    borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",

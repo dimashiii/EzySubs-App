@@ -1,28 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Stack, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import {
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { loadJSON, saveJSON } from "../../lib/storage";
+import { useEffect, useMemo, useState } from "react";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import TimeSelectField from "../../components/TimeSelectField";
-
-const DEFAULT_SETTINGS = Object.freeze({
-  halfTime: 18,
-  quarterTime: 8,
-  subsTime: 4,
-});
-
-const HALF_OPTIONS = [5, 8, 10, 12, 15, 18, 20, 24, 30, 40, 45, 50, 60];
-const SUB_OPTIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15];
+import { loadJSON, saveJSON } from "../../lib/storage";
 
 type StoredSettings = {
   halfTime: number;
@@ -33,6 +15,15 @@ type StoredSettings = {
 type SettingsHistoryEntry = StoredSettings & {
   savedAt: string;
 };
+
+const DEFAULT_SETTINGS = Object.freeze({
+  halfTime: 18,
+  quarterTime: 8,
+  subsTime: 4,
+});
+
+const HALF_OPTIONS = [5, 8, 10, 12, 15, 18, 20, 24, 30, 40, 45, 50, 60];
+const SUB_OPTIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15];
 
 export default function NewGame() {
   const router = useRouter();
@@ -124,14 +115,8 @@ export default function NewGame() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <KeyboardAvoidingView
-        style={[styles.screen, { backgroundColor: theme.bg }]}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-        >
+      <View style={[styles.screen, { backgroundColor: theme.bg }]}>
+        <View style={styles.content}>
           <View style={styles.topRow}>
             <Pressable
               onPress={() => router.back()}
@@ -140,52 +125,48 @@ export default function NewGame() {
             >
               <Ionicons name="chevron-back" size={20} color={theme.text} />
             </Pressable>
-            <Text style={[styles.heading, { color: theme.text }]}>Game Settings</Text>
-            <View style={{ width: 40 }} />
+            <Text style={[styles.heading, { color: theme.text }]}>Game settings</Text>
+            <Pressable
+              onPress={resetToDefaults}
+              hitSlop={10}
+              style={styles.resetInline}
+            >
+              <Ionicons name="refresh" size={14} color={theme.accent} />
+              <Text style={[styles.resetInlineText, { color: theme.accent }]}>Reset</Text>
+            </Pressable>
           </View>
-          <Text style={[styles.description, { color: theme.muted }]}>
-            Adjust period and substitution intervals before tip-off.
-          </Text>
+
+          <Text style={[styles.subtitle, { color: theme.text }]}>Adjust period and substitution intervals before tip-off.</Text>
+
+          <View style={styles.gameInfoRow}>
+            <Ionicons
+              name="basketball-outline"
+              size={22}
+              color={theme.accent}
+              style={{ marginRight: 10 }}
+            />
+            <Text style={[styles.gameInfoText, { color: theme.accent }]}>5 v 5 basketball session</Text>
+          </View>
 
           <View
             style={[styles.section, { backgroundColor: theme.section, borderColor: theme.border }]}
           >
-            <View style={styles.gamePlan}>
-              <Ionicons name="people-outline" size={20} color={theme.accent} />
-              <Text style={styles.gamePlanLabel}>Game Plan</Text>
-              <Text style={styles.gamePlanValue}>5 v 5</Text>
-            </View>
-
-            <View style={styles.infoRowInline}>
-              <Ionicons
-                name="time-outline"
-                size={16}
-                color={theme.accent}
-                style={{ marginTop: 2 }}
-              />
-              <Text style={[styles.infoInlineText, { color: theme.muted }]}>
-                Half-time is the longer mid-game reset. Quarter-time is an optional quick break each quarter.
-              </Text>
-            </View>
-
-        <TimeSelectField
-          label="Half Time"
-          helper="Mid-game break after Q2"
-          value={times.halfTime}
-          options={HALF_OPTIONS}
-          min={5}
-          max={60}
-          onChange={handleHalfChange}
-        />
+            <TimeSelectField
+              label="Half length"
+              helper="Minutes per half"
+              value={times.halfTime}
+              options={HALF_OPTIONS}
+              min={5}
+              max={60}
+              onChange={handleHalfChange}
+            />
 
             <View style={styles.divider} />
 
-            <View style={styles.quarterBlock}>
+            <View style={styles.quarterRow}>
               <View style={styles.quarterCopy}>
-                <Text style={styles.labelStrong}>Quarter Break</Text>
-                <Text style={[styles.helperMuted, { color: theme.muted }]}>
-                  Automatically half of your half-time. Toggle off if quarters aren’t used.
-                </Text>
+                <Text style={styles.labelStrong}>Quarter break</Text>
+                <Text style={[styles.helperMuted, { color: theme.muted }]}>Half of the half length. Toggle off if not needed.</Text>
               </View>
               <Pressable
                 style={[styles.quarterToggle, times.quarterTime > 0 && styles.quarterToggleActive]}
@@ -209,35 +190,35 @@ export default function NewGame() {
 
             <View style={styles.divider} />
 
-          <TimeSelectField
-            label="Auto Sub Interval"
-            helper="Minutes between auto sub rotations"
-            value={times.subsTime}
-            options={SUB_OPTIONS}
-            min={1}
-            max={15}
-            onChange={handleSubsChange}
-          />
+            <TimeSelectField
+              label="Auto subs"
+              helper="Minutes between rotations"
+              value={times.subsTime}
+              options={SUB_OPTIONS}
+              min={1}
+              max={15}
+              onChange={handleSubsChange}
+            />
           </View>
+        </View>
 
-          <View style={styles.actions}>
-            <ActionPill
-              label="Reset"
-              icon="refresh"
-              onPress={resetToDefaults}
-              textColor={theme.text}
-              bgColor={theme.section}
-            />
-            <ActionPill
-              label="Confirm"
-              icon="checkmark"
-              onPress={confirm}
-              textColor="#FFFFFF"
-              bgColor={theme.accent}
-            />
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        <View style={styles.actions}>
+          <ActionPill
+            label="Cancel"
+            icon="close"
+            onPress={() => router.back()}
+            textColor={theme.text}
+            bgColor={theme.section}
+          />
+          <ActionPill
+            label="Save"
+            icon="checkmark"
+            onPress={confirm}
+            textColor="#FFFFFF"
+            bgColor={theme.accent}
+          />
+        </View>
+      </View>
     </>
   );
 }
@@ -312,17 +293,17 @@ function ActionPill({ label, icon, onPress, textColor, bgColor }: ActionProps) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 36,
+    paddingBottom: 36,
   },
-  scrollContent: {
-    padding: 24,
-    paddingBottom: 48,
+  content: {
+    flex: 1,
   },
   topRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 18,
-    marginBottom: 12,
   },
   backButton: {
     width: 40,
@@ -335,80 +316,75 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   heading: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: "700",
-    textAlign: "center",
   },
-  description: {
-    textAlign: "center",
-    marginTop: 8,
-    marginBottom: 28,
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  section: {
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    gap: 20,
-  },
-  gamePlan: {
-    backgroundColor: "rgba(37,99,235,0.08)",
-    borderRadius: 16,
-    padding: 12,
+  resetInline: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(37,99,235,0.24)",
   },
-  gamePlanLabel: {
-    fontSize: 14,
-    color: "#2563EB",
+  resetInlineText: {
+    fontSize: 13,
     fontWeight: "600",
   },
-  gamePlanValue: {
+  subtitle: {
+    marginTop: 20,
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  gameInfoRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gameInfoText: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#111827",
   },
-  infoRowInline: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  infoInlineText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
+  section: {
+    marginTop: 32,
+    borderRadius: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    borderWidth: 1,
+    gap: 18,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: "rgba(15,23,42,0.08)",
   },
-  quarterBlock: {
+  quarterRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 16,
   },
   quarterCopy: {
     flex: 1,
     gap: 4,
   },
   labelStrong: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: "#0F172A",
   },
   helperMuted: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
   },
   quarterToggle: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 999,
     borderWidth: 1,
@@ -417,16 +393,16 @@ const styles = StyleSheet.create({
   },
   quarterToggleActive: {
     borderColor: "rgba(37,99,235,0.35)",
-    backgroundColor: "rgba(37,99,235,0.1)",
+    backgroundColor: "rgba(37,99,235,0.08)",
   },
   quarterValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
   },
   actions: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 28,
+    marginTop: 16,
   },
   pill: {
     flexDirection: "row",
