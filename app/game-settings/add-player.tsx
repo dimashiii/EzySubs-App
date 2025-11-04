@@ -3,6 +3,7 @@ import { Stack, router } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Dimensions,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -11,10 +12,27 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { loadJSON, saveJSON } from "../../lib/storage";
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+// Device detection
+const isSmallDevice = SCREEN_WIDTH < 375;
+const isTinyDevice = SCREEN_WIDTH < 350;
+const isShortDevice = SCREEN_HEIGHT < 700;
+const isTablet = SCREEN_WIDTH >= 768;
+
+// Responsive scaling
+const scale = (size: number) => {
+  const ratio = SCREEN_WIDTH / 375;
+  const clamped = Math.max(0.85, Math.min(ratio, 1.3));
+  return size * clamped;
+};
+const moderateScale = (size: number, factor = 0.5) =>
+  size + (scale(size) - size) * factor;
 
 type Player = { id: string; name: string };
 
@@ -24,16 +42,14 @@ const KEYS = {
 };
 
 export default function AddPlayer() {
-  // theme = palette so we can use theme.* in the header you gave
   const palette = useMemo(
     () => ({
       bg: "#FFFFFF",
       card: "#FFFFFF",
       text: "#0F172A",
       muted: "#64748B",
-      accent: "#1976D2",
-      warm: "#F57C00",
-      amber: "#FB8C00",
+      accent: "#2563EB",
+      warm: "#F97316",
       border: "rgba(15,23,42,0.12)",
     }),
     []
@@ -48,15 +64,29 @@ export default function AddPlayer() {
   const [editing, setEditing] = useState<Player | null>(null);
   const [editedName, setEditedName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [recentlyRemoved, setRecentlyRemoved] = useState<{
+    players: Player[];
+    selected: string[];
+  } | null>(null);
+  const [sortBy, setSortBy] = useState<"name" | "recent" | "frequent">("name");
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "success" | "info" | "warning";
+  } | null>(null);
 
   useEffect(() => {
     (async () => {
       const storedPlayers = await loadJSON<Player[]>(KEYS.players, []);
       const storedSelected = await loadJSON<string[]>(KEYS.selected, []);
+      const storedSort = await loadJSON<"name" | "recent" | "frequent">(
+        "playerSortBy",
+        "name"
+      );
       setPlayers(storedPlayers);
       setSelected(
         storedSelected.filter((id) => storedPlayers.some((p) => p.id === id))
       );
+      setSortBy(storedSort);
       setLoading(false);
     })();
   }, []);
@@ -66,11 +96,42 @@ export default function AddPlayer() {
     await saveJSON(KEYS.selected, nextSelected);
   };
 
+  const showToast = (
+    message: string,
+    type: "success" | "info" | "warning" = "info"
+  ) => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return players;
-    return players.filter((p) => p.name.toLowerCase().includes(q));
-  }, [players, query]);
+    let result = q
+      ? players.filter((p) => p.name.toLowerCase().includes(q))
+      : players;
+
+    // Sort based on current sort option
+    if (sortBy === "name") {
+      result = [...result].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortBy === "recent") {
+      // Most recently added first (by ID timestamp)
+      result = [...result].sort((a, b) => {
+        const aTime = parseInt(a.id.split("-")[0]);
+        const bTime = parseInt(b.id.split("-")[0]);
+        return bTime - aTime;
+      });
+    } else if (sortBy === "frequent") {
+      // Count how many times each player was selected (mock - could track this)
+      // For now, show selected players first
+      result = [...result].sort((a, b) => {
+        const aSelected = selected.includes(a.id) ? 1 : 0;
+        const bSelected = selected.includes(b.id) ? 1 : 0;
+        return bSelected - aSelected;
+      });
+    }
+
+    return result;
+  }, [players, query, sortBy, selected]);
 
   const selectedPlayers = React.useMemo(
     () => players.filter((p) => selected.includes(p.id)),
@@ -88,21 +149,36 @@ export default function AddPlayer() {
   };
 
   const selectAllVisible = () => {
+    if (filtered.length === 0) return;
     const ids = filtered.map((p) => p.id);
     const next = Array.from(new Set([...selected, ...ids]));
     setSelected(next);
     persist(players, next);
+    showToast(
+      `${filtered.length} player${filtered.length > 1 ? "s" : ""} selected`,
+      "success"
+    );
   };
 
   const deselectAllVisible = () => {
+    if (filtered.length === 0) return;
     const ids = new Set(filtered.map((p) => p.id));
     const next = selected.filter((id) => !ids.has(id));
     setSelected(next);
     persist(players, next);
+    showToast(
+      `${filtered.length} player${filtered.length > 1 ? "s" : ""} deselected`,
+      "info"
+    );
   };
 
   const removePlayers = (ids: string[]) => {
     if (ids.length === 0) return;
+
+    // Store for undo
+    const playersToRemove = players.filter((p) => ids.includes(p.id));
+    const selectedToRemove = selected.filter((id) => ids.includes(id));
+
     Alert.alert(
       ids.length === 1 ? "Remove player" : "Remove players",
       ids.length === 1
@@ -120,10 +196,54 @@ export default function AddPlayer() {
             setPlayers(nextPlayers);
             setSelected(nextSelected);
             persist(nextPlayers, nextSelected);
+
+            // Show undo option
+            setRecentlyRemoved({
+              players: playersToRemove,
+              selected: selectedToRemove,
+            });
+
+            // Auto-hide undo after 5 seconds
+            setTimeout(() => {
+              setRecentlyRemoved(null);
+            }, 5000);
           },
         },
       ]
     );
+  };
+
+  const undoRemove = () => {
+    if (!recentlyRemoved) return;
+
+    const nextPlayers = [...players, ...recentlyRemoved.players].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    );
+    const nextSelected = [...selected, ...recentlyRemoved.selected];
+
+    setPlayers(nextPlayers);
+    setSelected(nextSelected);
+    setRecentlyRemoved(null);
+    persist(nextPlayers, nextSelected);
+
+    showToast(
+      `${recentlyRemoved.players.length} player${
+        recentlyRemoved.players.length > 1 ? "s" : ""
+      } restored`,
+      "success"
+    );
+  };
+
+  const changeSortBy = async (newSort: "name" | "recent" | "frequent") => {
+    setSortBy(newSort);
+    await saveJSON("playerSortBy", newSort);
+
+    const sortLabels = {
+      name: "Sorted by name",
+      recent: "Sorted by recently added",
+      frequent: "Sorted by selected first",
+    };
+    showToast(sortLabels[newSort], "info");
   };
 
   const openAdd = () => {
@@ -141,9 +261,7 @@ export default function AddPlayer() {
       Alert.alert("Duplicate name", "A player with this name already exists.");
       return;
     }
-    const id = `${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const nextPlayers = [...players, { id, name }].sort((a, b) =>
       a.name.localeCompare(b.name)
     );
@@ -152,6 +270,7 @@ export default function AddPlayer() {
     setSelected(nextSelected);
     setAdding(false);
     persist(nextPlayers, nextSelected);
+    showToast(`${name} added to roster`, "success");
   };
 
   const beginEdit = (player: Player) => {
@@ -164,15 +283,10 @@ export default function AddPlayer() {
     const name = editedName.trim();
     if (name.length < 2) return;
     const duplicate = players.some(
-      (p) =>
-        p.id !== editing.id &&
-        p.name.toLowerCase() === name.toLowerCase()
+      (p) => p.id !== editing.id && p.name.toLowerCase() === name.toLowerCase()
     );
     if (duplicate) {
-      Alert.alert(
-        "Duplicate name",
-        "Another player already uses this name."
-      );
+      Alert.alert("Duplicate name", "Another player already uses this name.");
       return;
     }
     const nextPlayers = players
@@ -182,6 +296,7 @@ export default function AddPlayer() {
     setEditing(null);
     setEditedName("");
     persist(nextPlayers, selected);
+    showToast(`Player name updated`, "success");
   };
 
   const confirmSelection = () => {
@@ -189,40 +304,53 @@ export default function AddPlayer() {
       Alert.alert("No players selected", "Pick at least one player.");
       return;
     }
-    Alert.alert(
-      "Saved",
-      `Selected ${selected.length} players for today.`,
-      [
-        {
-          text: "OK",
-          onPress: () => router.replace("/game-settings/lineup"),
-        },
-      ]
-    );
+    if (selected.length < 5) {
+      Alert.alert(
+        "Low player count",
+        `You've selected ${selected.length} player${
+          selected.length > 1 ? "s" : ""
+        }. For 5v5 basketball, you typically need at least 5 players. Continue anyway?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Continue",
+            onPress: () => {
+              showToast(
+                `${selected.length} player${
+                  selected.length > 1 ? "s" : ""
+                } ready for game`,
+                "success"
+              );
+              setTimeout(() => router.replace("/game-settings/lineup"), 500);
+            },
+          },
+        ]
+      );
+      return;
+    }
+    showToast(`${selected.length} players ready for game`, "success");
+    setTimeout(() => router.replace("/game-settings/lineup"), 500);
   };
 
   const renderItem = ({ item }: { item: Player }) => {
     const checked = selected.includes(item.id);
     return (
       <View style={[styles.row, checked && styles.rowSelected]}>
-        <Pressable
-          onPress={() => toggle(item.id)}
-          style={styles.rowPressable}
-        >
+        <Pressable onPress={() => toggle(item.id)} style={styles.rowPressable}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
               {item.name.trim()[0]?.toUpperCase() || "A"}
             </Text>
           </View>
-          <Text style={styles.playerName}>{item.name}</Text>
+          <Text style={styles.playerName} numberOfLines={1}>
+            {item.name}
+          </Text>
           <Pressable
             onPress={() => toggle(item.id)}
             hitSlop={8}
             style={[styles.checkbox, checked && styles.checkboxActive]}
           >
-            {checked ? (
-              <Ionicons name="checkmark" size={16} color="#fff" />
-            ) : null}
+            {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
           </Pressable>
         </Pressable>
         <View style={styles.rowActions}>
@@ -233,7 +361,7 @@ export default function AddPlayer() {
           >
             <Ionicons
               name="pencil"
-              size={16}
+              size={isTinyDevice ? 14 : 16}
               color={palette.accent}
             />
           </Pressable>
@@ -244,7 +372,7 @@ export default function AddPlayer() {
           >
             <Ionicons
               name="trash-outline"
-              size={16}
+              size={isTinyDevice ? 14 : 16}
               color={palette.warm}
             />
           </Pressable>
@@ -274,47 +402,30 @@ export default function AddPlayer() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-
       <KeyboardAvoidingView
         style={[styles.screen, { backgroundColor: theme.bg }]}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <SafeAreaView style={{ flex: 1 }}>
-          {/* top header row you asked for */}
+        <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+          {/* Header */}
           <View style={styles.topRow}>
             <Pressable
               onPress={() => router.back()}
               style={styles.backButton}
               hitSlop={10}
             >
-              <Ionicons
-                name="chevron-back"
-                size={20}
-                color={theme.text}
-              />
+              <Ionicons name="chevron-back" size={20} color={theme.text} />
             </Pressable>
-
-            <Text
-              style={[
-                styles.heading,
-                { color: theme.text },
-              ]}
-            >
+            <Text style={[styles.heading, { color: theme.text }]}>
               Add Players
             </Text>
-
-            {/* spacer to balance flex, matches width of back button */}
-            <View style={{ width: 40 }} />
+            <View style={{ width: isTinyDevice ? 36 : 40 }} />
           </View>
 
-          {/* search + chips + roster list */}
-          <View style={{ flex: 1 }}>
+          {/* Search Bar + Sort */}
+          <View style={styles.searchContainer}>
             <View style={styles.searchRow}>
-              <Ionicons
-                name="search"
-                size={18}
-                color="#6B7280"
-              />
+              <Ionicons name="search" size={18} color="#6B7280" />
               <TextInput
                 value={query}
                 onChangeText={setQuery}
@@ -323,151 +434,227 @@ export default function AddPlayer() {
                 style={styles.searchInput}
               />
               {query ? (
-                <Pressable
-                  onPress={() => setQuery("")}
-                  hitSlop={10}
-                >
-                  <Ionicons
-                    name="close-circle"
-                    size={20}
-                    color="#6B7280"
-                  />
+                <Pressable onPress={() => setQuery("")} hitSlop={10}>
+                  <Ionicons name="close-circle" size={18} color="#6B7280" />
                 </Pressable>
               ) : null}
               <Pressable
                 onPress={openAdd}
                 hitSlop={10}
-                style={{ marginLeft: 8 }}
+                style={styles.addIconBtn}
               >
                 <Ionicons
                   name="person-add"
-                  size={24}
+                  size={isTinyDevice ? 20 : 22}
                   color={palette.accent}
                 />
               </Pressable>
             </View>
 
-            {selectedPlayers.length > 0 ? (
-              <View style={styles.selectedWrap}>
-                <Text style={styles.sectionLabel}>
-                  Selected Today
-                </Text>
-                <View style={styles.chipRow}>
-                  {selectedPlayers.map((player) => (
-                    <Pressable
-                      key={`chip-${player.id}`}
-                      style={styles.chip}
-                      onPress={() => toggle(player.id)}
-                    >
-                      <Text style={styles.chipText}>
-                        {player.name}
-                      </Text>
-                      <Ionicons
-                        name="close"
-                        size={14}
-                        color={palette.accent}
-                      />
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            <Text
-              style={[
-                styles.sectionLabel,
-                { marginHorizontal: 16, marginBottom: 6 },
-              ]}
-            >
-              Roster
-            </Text>
-
-            <FlatList
-              data={filtered}
-              keyExtractor={(p) => p.id}
-              renderItem={renderItem}
-              ItemSeparatorComponent={() => (
-                <View
-                  style={{
-                    height: StyleSheet.hairlineWidth,
-                    backgroundColor:
-                      "rgba(15,23,42,0.08)",
-                  }}
+            {/* Sort Options */}
+            <View style={styles.sortRow}>
+              <Pressable
+                onPress={() => changeSortBy("name")}
+                style={[
+                  styles.sortTab,
+                  sortBy === "name" && styles.sortTabActive,
+                ]}
+              >
+                <Ionicons
+                  name="text-outline"
+                  size={14}
+                  color={sortBy === "name" ? palette.accent : "#64748B"}
                 />
-              )}
-              ListEmptyComponent={
-                <View style={styles.emptyState}>
-                  <Ionicons
-                    name="people-outline"
-                    size={32}
-                    color={palette.muted}
-                  />
-                  <Text
-                    style={{
-                      color: palette.muted,
-                      marginTop: 8,
-                    }}
-                  >
-                    {query
-                      ? "No matching players"
-                      : "No players yet"}
-                  </Text>
-                  <Pressable
-                    onPress={openAdd}
-                    style={{ marginTop: 12 }}
-                  >
-                    <Text
-                      style={{
-                        color: palette.accent,
-                        fontWeight: "600",
-                      }}
-                    >
-                      Add New Player
-                    </Text>
-                  </Pressable>
-                </View>
-              }
-              contentContainerStyle={{
-                paddingHorizontal: 16,
-                paddingBottom: 120,
-              }}
-            />
+                <Text
+                  style={[
+                    styles.sortTabText,
+                    sortBy === "name" && styles.sortTabTextActive,
+                  ]}
+                >
+                  Name
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => changeSortBy("recent")}
+                style={[
+                  styles.sortTab,
+                  sortBy === "recent" && styles.sortTabActive,
+                ]}
+              >
+                <Ionicons
+                  name="time-outline"
+                  size={14}
+                  color={sortBy === "recent" ? palette.accent : "#64748B"}
+                />
+                <Text
+                  style={[
+                    styles.sortTabText,
+                    sortBy === "recent" && styles.sortTabTextActive,
+                  ]}
+                >
+                  Recent
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => changeSortBy("frequent")}
+                style={[
+                  styles.sortTab,
+                  sortBy === "frequent" && styles.sortTabActive,
+                ]}
+              >
+                <Ionicons
+                  name="star-outline"
+                  size={14}
+                  color={sortBy === "frequent" ? palette.accent : "#64748B"}
+                />
+                <Text
+                  style={[
+                    styles.sortTabText,
+                    sortBy === "frequent" && styles.sortTabTextActive,
+                  ]}
+                >
+                  Selected
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
-          {/* bottom actions bar */}
+          {/* Selected Chips */}
+          {selectedPlayers.length > 0 && (
+            <View style={styles.selectedWrap}>
+              <View style={styles.selectedHeader}>
+                <Text style={styles.sectionLabel}>Playing Today</Text>
+                <Text style={styles.selectedCount}>{selected.length}</Text>
+              </View>
+              <View style={styles.chipRow}>
+                {selectedPlayers.map((player) => (
+                  <Pressable
+                    key={`chip-${player.id}`}
+                    style={styles.chip}
+                    onPress={() => toggle(player.id)}
+                  >
+                    <Text style={styles.chipText} numberOfLines={1}>
+                      {player.name}
+                    </Text>
+                    <Ionicons name="close" size={12} color={palette.accent} />
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Roster List */}
+          <View style={styles.listHeader}>
+            <Text style={styles.sectionLabel}>Roster ({filtered.length})</Text>
+          </View>
+
+          <FlatList
+            data={filtered}
+            keyExtractor={(p) => p.id}
+            renderItem={renderItem}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Ionicons
+                  name="people-outline"
+                  size={isTinyDevice ? 28 : 32}
+                  color={palette.muted}
+                />
+                <Text style={styles.emptyText}>
+                  {query ? "No matching players" : "No players yet"}
+                </Text>
+                <Pressable onPress={openAdd} style={styles.emptyButton}>
+                  <Text style={styles.emptyButtonText}>Add New Player</Text>
+                </Pressable>
+              </View>
+            }
+            contentContainerStyle={styles.listContent}
+          />
+
+          {/* Undo Toast - Remove action */}
+          {recentlyRemoved && (
+            <View style={styles.undoToast}>
+              <View style={styles.undoToastContent}>
+                <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                <Text style={styles.undoToastText}>
+                  {recentlyRemoved.players.length === 1
+                    ? "Player removed"
+                    : `${recentlyRemoved.players.length} players removed`}
+                </Text>
+              </View>
+              <Pressable onPress={undoRemove} style={styles.undoButton}>
+                <Text style={styles.undoButtonText}>UNDO</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {/* General Toast Messages */}
+          {toast && (
+            <View
+              style={[
+                styles.toast,
+                toast.type === "success" && styles.toastSuccess,
+                toast.type === "warning" && styles.toastWarning,
+              ]}
+            >
+              <Ionicons
+                name={
+                  toast.type === "success"
+                    ? "checkmark-circle"
+                    : toast.type === "warning"
+                    ? "alert-circle"
+                    : "information-circle"
+                }
+                size={18}
+                color={
+                  toast.type === "success"
+                    ? "#10B981"
+                    : toast.type === "warning"
+                    ? "#F59E0B"
+                    : "#3B82F6"
+                }
+              />
+              <Text style={styles.toastText}>{toast.message}</Text>
+            </View>
+          )}
+
+          {/* Bottom Actions */}
           <View style={styles.bottomRow}>
             <Action
               icon="trash"
-              label="Remove"
+              label={isTinyDevice ? "Del" : "Remove"}
               onPress={() => removePlayers(selected)}
+              disabled={selected.length === 0}
             />
             {filtered.length > 0 &&
-            filtered.every((p) =>
-              selected.includes(p.id)
-            ) ? (
+            filtered.every((p) => selected.includes(p.id)) ? (
               <Action
                 icon="square-outline"
-                label="Clear"
+                label={isTinyDevice ? "Clear" : "Clear All"}
                 onPress={deselectAllVisible}
               />
             ) : (
               <Action
                 icon="checkbox-outline"
-                label="Select All"
+                label={isTinyDevice ? "All" : "Select All"}
                 onPress={selectAllVisible}
+                disabled={filtered.length === 0}
               />
             )}
             <Action
               icon="checkmark-circle"
-              label="Confirm"
+              label="Continue"
               onPress={confirmSelection}
               primary
+              disabled={selected.length === 0}
             />
           </View>
         </SafeAreaView>
       </KeyboardAvoidingView>
 
-      {/* ADD PLAYER MODAL */}
+      {/* ADD MODAL */}
       <Modal
         visible={adding}
         transparent
@@ -475,11 +662,13 @@ export default function AddPlayer() {
         onRequestClose={() => setAdding(false)}
       >
         <KeyboardAvoidingView
-          behavior={
-            Platform.OS === "ios" ? "padding" : undefined
-          }
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.modalWrap}
         >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setAdding(false)}
+          />
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Add Player</Text>
             <View style={styles.modalInputRow}>
@@ -487,16 +676,15 @@ export default function AddPlayer() {
                 value={newName}
                 onChangeText={setNewName}
                 placeholder="Player name"
+                placeholderTextColor="#9CA3AF"
                 style={styles.modalInput}
+                autoFocus
               />
               {newName ? (
-                <Pressable
-                  onPress={() => setNewName("")}
-                  hitSlop={10}
-                >
+                <Pressable onPress={() => setNewName("")} hitSlop={10}>
                   <Ionicons
                     name="close-circle-outline"
-                    size={20}
+                    size={18}
                     color="#6B7280"
                   />
                 </Pressable>
@@ -507,29 +695,24 @@ export default function AddPlayer() {
                 onPress={() => setAdding(false)}
                 style={styles.modalSecondary}
               >
-                <Text style={styles.modalSecondaryText}>
-                  Cancel
-                </Text>
+                <Text style={styles.modalSecondaryText}>Cancel</Text>
               </Pressable>
               <Pressable
                 disabled={newName.trim().length < 2}
                 onPress={addPlayer}
                 style={[
                   styles.modalPrimary,
-                  newName.trim().length < 2 &&
-                    styles.modalPrimaryDisabled,
+                  newName.trim().length < 2 && styles.modalPrimaryDisabled,
                 ]}
               >
-                <Text style={styles.modalPrimaryText}>
-                  Add Player
-                </Text>
+                <Text style={styles.modalPrimaryText}>Add</Text>
               </Pressable>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* EDIT PLAYER MODAL */}
+      {/* EDIT MODAL */}
       <Modal
         visible={!!editing}
         transparent
@@ -537,11 +720,13 @@ export default function AddPlayer() {
         onRequestClose={() => setEditing(null)}
       >
         <KeyboardAvoidingView
-          behavior={
-            Platform.OS === "ios" ? "padding" : undefined
-          }
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.modalWrap}
         >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setEditing(null)}
+          />
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Edit Player</Text>
             <View style={styles.modalInputRow}>
@@ -549,16 +734,15 @@ export default function AddPlayer() {
                 value={editedName}
                 onChangeText={setEditedName}
                 placeholder="Player name"
+                placeholderTextColor="#9CA3AF"
                 style={styles.modalInput}
+                autoFocus
               />
               {editedName ? (
-                <Pressable
-                  onPress={() => setEditedName("")}
-                  hitSlop={10}
-                >
+                <Pressable onPress={() => setEditedName("")} hitSlop={10}>
                   <Ionicons
                     name="close-circle-outline"
-                    size={20}
+                    size={18}
                     color="#6B7280"
                   />
                 </Pressable>
@@ -572,22 +756,17 @@ export default function AddPlayer() {
                 }}
                 style={styles.modalSecondary}
               >
-                <Text style={styles.modalSecondaryText}>
-                  Cancel
-                </Text>
+                <Text style={styles.modalSecondaryText}>Cancel</Text>
               </Pressable>
               <Pressable
                 disabled={editedName.trim().length < 2}
                 onPress={saveEdit}
                 style={[
                   styles.modalPrimary,
-                  editedName.trim().length < 2 &&
-                    styles.modalPrimaryDisabled,
+                  editedName.trim().length < 2 && styles.modalPrimaryDisabled,
                 ]}
               >
-                <Text style={styles.modalPrimaryText}>
-                  Save
-                </Text>
+                <Text style={styles.modalPrimaryText}>Save</Text>
               </Pressable>
             </View>
           </View>
@@ -602,25 +781,30 @@ function Action({
   label,
   onPress,
   primary,
+  disabled,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   primary?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <Pressable onPress={onPress} style={styles.actionButton}>
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[styles.actionButton, disabled && styles.actionButtonDisabled]}
+    >
       <Ionicons
         name={icon}
-        size={20}
-        color={
-          primary ? ACTION_PRIMARY_COLOR : ACTION_TEXT_COLOR
-        }
+        size={isTinyDevice ? 18 : 20}
+        color={disabled ? "#9CA3AF" : primary ? "#2563EB" : "#0F172A"}
       />
       <Text
         style={[
           styles.actionText,
-          primary && { color: ACTION_PRIMARY_COLOR },
+          primary && { color: "#2563EB" },
+          disabled && { color: "#9CA3AF" },
         ]}
       >
         {label}
@@ -629,93 +813,118 @@ function Action({
   );
 }
 
-const ACTION_TEXT_COLOR = "#0F172A";
-const ACTION_PRIMARY_COLOR = "#2563EB";
-
 const styles = StyleSheet.create({
-  // screen wrapper for KeyboardAvoidingView
   screen: {
     flex: 1,
   },
-
-  // NEW HEADER ROW styles (mapped from your snippet)
   topRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    paddingTop: Platform.select({ ios: 12, android: 16, default: 12 }),
     paddingBottom: 12,
     justifyContent: "space-between",
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: isTinyDevice ? 36 : 40,
+    height: isTinyDevice ? 36 : 40,
+    borderRadius: isTinyDevice ? 18 : 20,
     borderWidth: 1,
-    borderColor: "rgba(25,118,210,0.2)",
+    borderColor: "rgba(37,99,235,0.2)",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
+    flexShrink: 0,
   },
   heading: {
-    fontSize: 20,
+    fontSize: isTinyDevice ? 18 : isSmallDevice ? 19 : moderateScale(20),
     fontWeight: "700",
+    flex: 1,
+    textAlign: "center",
   },
-
-  // (old headerBar kept in case you reuse somewhere else)
-  headerBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 12,
+  searchContainer: {
+    gap: 10,
   },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(25,118,210,0.2)",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  screenTitle: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#0F172A",
-  },
-
   searchRow: {
-    marginHorizontal: 16,
-    marginTop: 8, // reduced because we now have heading above
-    marginBottom: 18,
+    marginHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#F5F7FB",
     borderRadius: 12,
-    paddingHorizontal: 14,
-    height: 48,
-    gap: 8,
+    paddingHorizontal: isTinyDevice ? 12 : 14,
+    height: isTinyDevice ? 44 : 48,
+    gap: isTinyDevice ? 6 : 8,
   },
   searchInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: isTinyDevice ? 14 : moderateScale(15),
     color: "#0F172A",
   },
-  selectedWrap: {
-    marginHorizontal: 16,
-    marginBottom: 18,
+  addIconBtn: {
+    marginLeft: 4,
+  },
+  sortRow: {
+    flexDirection: "row",
+    marginHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    marginBottom: 16,
+    gap: isTinyDevice ? 6 : 8,
+    backgroundColor: "#F5F7FB",
+    borderRadius: 10,
+    padding: 4,
+  },
+  sortTab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: isTinyDevice ? 6 : 8,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+  },
+  sortTabActive: {
     backgroundColor: "#FFFFFF",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  sortTabText: {
+    fontSize: isTinyDevice ? 10 : moderateScale(11),
+    fontWeight: "600",
+    color: "#64748B",
+  },
+  sortTabTextActive: {
+    color: "#2563EB",
+  },
+  selectedWrap: {
+    marginHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    marginBottom: 16,
+    backgroundColor: "rgba(37,99,235,0.06)",
     borderRadius: 12,
-    padding: 14,
+    padding: isTinyDevice ? 12 : 14,
     borderWidth: 1,
-    borderColor: "rgba(200,205,212,0.6)",
-    gap: 10,
+    borderColor: "rgba(37,99,235,0.15)",
+  },
+  selectedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  selectedCount: {
+    fontSize: isTinyDevice ? 12 : moderateScale(13),
+    fontWeight: "700",
+    color: "#2563EB",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
   },
   sectionLabel: {
-    fontSize: 14,
+    fontSize: isTinyDevice ? 11 : moderateScale(12),
     fontWeight: "700",
     color: "#1F2937",
     textTransform: "uppercase",
@@ -724,178 +933,304 @@ const styles = StyleSheet.create({
   chipRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: isTinyDevice ? 6 : 8,
   },
   chip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    gap: 4,
+    paddingHorizontal: isTinyDevice ? 10 : 12,
+    paddingVertical: isTinyDevice ? 5 : 6,
     borderRadius: 999,
-    backgroundColor: "rgba(245,124,0,0.14)",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(37,99,235,0.2)",
+    maxWidth: SCREEN_WIDTH * 0.4,
   },
   chipText: {
-    color: "#F57C00",
+    color: "#2563EB",
     fontWeight: "600",
+    fontSize: isTinyDevice ? 11 : moderateScale(12),
+    flexShrink: 1,
+  },
+  listHeader: {
+    paddingHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    marginBottom: 8,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: isTinyDevice ? 10 : 12,
+    paddingHorizontal: isTinyDevice ? 12 : 14,
     backgroundColor: "#FFFFFF",
   },
   rowSelected: {
-    backgroundColor: "rgba(25,118,210,0.08)",
+    backgroundColor: "rgba(37,99,235,0.08)",
   },
   rowPressable: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: isTinyDevice ? 10 : 12,
+    minWidth: 0,
   },
   rowActions: {
     flexDirection: "row",
-    gap: 8,
-    marginLeft: 12,
+    gap: 6,
+    marginLeft: 8,
+    flexShrink: 0,
   },
   rowActionBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: isTinyDevice ? 28 : 30,
+    height: isTinyDevice ? 28 : 30,
+    borderRadius: isTinyDevice ? 14 : 15,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "rgba(15,23,42,0.08)",
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: isTinyDevice ? 36 : 40,
+    height: isTinyDevice ? 36 : 40,
+    borderRadius: isTinyDevice ? 18 : 20,
     backgroundColor: "#E5E7EB",
     justifyContent: "center",
     alignItems: "center",
+    flexShrink: 0,
   },
   avatarText: {
     fontWeight: "700",
     color: "#1F2937",
-    fontSize: 16,
+    fontSize: isTinyDevice ? 14 : 16,
   },
   playerName: {
     flex: 1,
-    fontSize: 16,
+    fontSize: isTinyDevice ? 14 : moderateScale(15),
     color: "#0F172A",
+    fontWeight: "500",
   },
   checkbox: {
-    width: 22,
-    height: 22,
+    width: isTinyDevice ? 20 : 22,
+    height: isTinyDevice ? 20 : 22,
     borderRadius: 6,
     borderWidth: 2,
     borderColor: "#6B7280",
     justifyContent: "center",
     alignItems: "center",
+    flexShrink: 0,
   },
   checkboxActive: {
-    borderColor: "#1976D2",
-    backgroundColor: "#1976D2",
+    borderColor: "#2563EB",
+    backgroundColor: "#2563EB",
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(15,23,42,0.08)",
+    marginLeft: isTinyDevice ? 58 : 66,
+  },
+  listContent: {
+    paddingHorizontal: isTinyDevice ? 16 : isSmallDevice ? 18 : 20,
+    paddingBottom: isShortDevice ? 110 : 120,
   },
   emptyState: {
-    paddingVertical: 60,
+    paddingVertical: isShortDevice ? 50 : 60,
     alignItems: "center",
-    gap: 6,
+    gap: 8,
+  },
+  emptyText: {
+    color: "#64748B",
+    fontSize: isTinyDevice ? 13 : moderateScale(14),
+  },
+  emptyButton: {
+    marginTop: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: "#2563EB",
+    borderRadius: 999,
+  },
+  emptyButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: isTinyDevice ? 13 : moderateScale(14),
+  },
+  undoToast: {
+    position: "absolute",
+    bottom: isShortDevice ? 110 : 120,
+    left: isTinyDevice ? 16 : 20,
+    right: isTinyDevice ? 16 : 20,
+    backgroundColor: "#1F2937",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  undoToastContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+  },
+  undoToastText: {
+    color: "#FFFFFF",
+    fontSize: isTinyDevice ? 13 : moderateScale(14),
+    fontWeight: "500",
+    flex: 1,
+  },
+  undoButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(59,130,246,0.2)",
+    borderRadius: 8,
+  },
+  undoButtonText: {
+    color: "#60A5FA",
+    fontSize: isTinyDevice ? 12 : moderateScale(13),
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  toast: {
+    position: "absolute",
+    bottom: isShortDevice ? 110 : 120,
+    left: isTinyDevice ? 16 : 20,
+    right: isTinyDevice ? 16 : 20,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+  },
+  toastSuccess: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#86EFAC",
+  },
+  toastWarning: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FCD34D",
+  },
+  toastText: {
+    color: "#1F2937",
+    fontSize: isTinyDevice ? 13 : moderateScale(14),
+    fontWeight: "500",
+    flex: 1,
   },
   bottomRow: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 28,
+    paddingHorizontal: isTinyDevice ? 20 : isSmallDevice ? 22 : 24,
+    paddingTop: 14,
+    paddingBottom: Platform.select({ ios: 20, android: 24, default: 20 }),
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(25,118,210,0.18)",
+    borderColor: "rgba(15,23,42,0.12)",
     backgroundColor: "#FFFFFF",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: isTinyDevice ? 12 : 16,
   },
   actionButton: {
     flex: 1,
     alignItems: "center",
     gap: 4,
+    paddingVertical: 4,
+  },
+  actionButtonDisabled: {
+    opacity: 0.4,
   },
   actionText: {
-    fontSize: 13,
+    fontSize: isTinyDevice ? 11 : moderateScale(12),
     fontWeight: "600",
-    color: ACTION_TEXT_COLOR,
-  },
-
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "700",
     color: "#0F172A",
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  modalCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    padding: 20,
-    gap: 16,
   },
   modalWrap: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.25)",
+    backgroundColor: "rgba(0,0,0,0.4)",
     justifyContent: "center",
-    padding: 20,
+    padding: isTinyDevice ? 16 : 20,
+  },
+  modalCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: isTinyDevice ? 18 : 20,
+    gap: 16,
+    maxWidth: isTablet ? 400 : undefined,
+    alignSelf: "center",
+    width: "100%",
+  },
+  modalTitle: {
+    fontSize: isTinyDevice ? 16 : moderateScale(18),
+    fontWeight: "700",
+    color: "#0F172A",
+    textAlign: "center",
   },
   modalInputRow: {
     borderWidth: 1,
     borderColor: "rgba(15,23,42,0.16)",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    height: 48,
+    borderRadius: 10,
+    paddingHorizontal: isTinyDevice ? 12 : 14,
+    height: isTinyDevice ? 44 : 48,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#F9FAFB",
+    gap: 8,
   },
   modalInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: isTinyDevice ? 14 : moderateScale(15),
     color: "#111827",
   },
   modalActions: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 20,
+    gap: 10,
+    marginTop: 8,
   },
   modalSecondary: {
     flex: 1,
-    height: 48,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(25,118,210,0.2)",
+    height: isTinyDevice ? 44 : 48,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: "rgba(37,99,235,0.2)",
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
   },
   modalSecondaryText: {
     fontWeight: "600",
+    fontSize: isTinyDevice ? 14 : moderateScale(15),
     color: "#111827",
   },
   modalPrimary: {
     flex: 1,
-    height: 48,
-    borderRadius: 12,
+    height: isTinyDevice ? 44 : 48,
+    borderRadius: 999,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#F57C00",
+    backgroundColor: "#2563EB",
   },
   modalPrimaryDisabled: {
-    backgroundColor: "rgba(245,124,0,0.45)",
+    backgroundColor: "rgba(37,99,235,0.4)",
   },
   modalPrimaryText: {
     fontWeight: "700",
+    fontSize: isTinyDevice ? 14 : moderateScale(15),
     color: "#FFFFFF",
   },
 });

@@ -46,6 +46,7 @@ const THEME = {
   background: "#F4F7FF",
   card: "#FFFFFF",
   border: "rgba(37,99,235,0.18)",
+  divider: "rgba(15,23,42,0.08)",
   text: "#0F172A",
   muted: "#475569",
   accent: "#2563EB",

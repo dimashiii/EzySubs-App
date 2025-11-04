@@ -7,39 +7,64 @@ import {
   AppState,
   AppStateStatus,
   Animated,
+  Dimensions,
   Image,
   Modal,
+  PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  type GestureResponderEvent,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { loadJSON, removeJSON, saveJSON } from "../../lib/storage";
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+// Enhanced device detection
+const isSmallDevice = SCREEN_WIDTH < 375;
+const isTinyDevice = SCREEN_WIDTH < 350;
+const isShortDevice = SCREEN_HEIGHT < 700;
+const isTablet = SCREEN_WIDTH >= 768;
+const isLargeTablet = SCREEN_WIDTH >= 1024;
+
+// Improved responsive scaling
+const scale = (size: number) => {
+  if (isLargeTablet) return size * 1.4;
+  if (isTablet) return size * 1.2;
+  const ratio = SCREEN_WIDTH / 375;
+  const clamped = Math.max(0.85, Math.min(ratio, 1.15));
+  return size * clamped;
+};
+
+const moderateScale = (size: number, factor = 0.5) =>
+  size + (scale(size) - size) * factor;
 
 // ----------------------
 // CONFIG & HELPERS
 // ----------------------
 
-// Keys in storage (must match what we saved earlier in lineup / game-settings)
 const KEYS = {
-  playersDB: "playersDB", // all players user has created
-  selectedToday: "selectedPlayers", // ids chosen for today's game
-  gameSettings: "gameSettings", // { halfLengthSeconds, subIntervalSeconds, subWarningSeconds }
+  playersDB: "playersDB",
+  selectedToday: "selectedPlayers",
+  gameSettings: "gameSettings",
   lineup: "gameLineup",
   gameHistory: "gameHistory",
   livePreview: "liveGamePreview",
   ongoingGame: "ongoingGameState",
 };
 
-// fallback defaults if coach didn't change settings
 const DEFAULT_HALF_MINUTES = 18;
 const DEFAULT_QUARTER_MINUTES = 8;
 const DEFAULT_SUB_INTERVAL_MINUTES = 4;
-const DEFAULT_HALF_LENGTH_SECONDS = DEFAULT_HALF_MINUTES * 60; // 18:00 half
-const DEFAULT_SUB_INTERVAL_SECONDS = DEFAULT_SUB_INTERVAL_MINUTES * 60; // auto sub every 4:00
-const DEFAULT_SUB_WARNING_SECONDS = 30; // show arrows for last 0:30
+const DEFAULT_HALF_LENGTH_SECONDS = DEFAULT_HALF_MINUTES * 60;
+const DEFAULT_SUB_INTERVAL_SECONDS = DEFAULT_SUB_INTERVAL_MINUTES * 60;
+const DEFAULT_SUB_WARNING_SECONDS = 30;
 
 type Player = { id: string; name: string };
 
@@ -61,9 +86,16 @@ type SavedPlayerSnapshot = {
   subs: number;
 };
 
+type LayoutBox = {
+  pageX: number;
+  pageY: number;
+  width: number;
+  height: number;
+};
+
 type SavedGameSnapshot = {
   id: string;
-  practiceDate: string; // yyyy-mm-dd
+  practiceDate: string;
   startedAt: number;
   endedAt: number;
   totalGameSeconds: number;
@@ -110,39 +142,42 @@ function formatClock(totalSeconds: number) {
   return `${mm}:${ss}`;
 }
 
-// shared visual tokens
 const UI = {
-  pad: 24,
-  cardRadius: 24,
+  pad: isLargeTablet ? 32 : isTablet ? 28 : isTinyDevice ? 16 : 24,
+  cardRadius: isTablet ? 28 : 24,
   chipRadius: 999,
-  avatar: 48,
+  avatar: moderateScale(48),
 };
 
 const COLORS = {
-  bg: "#F8FAFC",
+  bg: "#F1F5F9",
   card: "#FFFFFF",
   border: "rgba(15,23,42,0.08)",
   text: "#0F172A",
   textMuted: "#64748B",
   accent: "#2563EB",
-  accentStrong: "#1E3A8A",
-  warn: "#FACC15",
-  danger: "#DC2626",
+  accentStrong: "#1E40AF",
+  accentSoft: "rgba(37,99,235,0.08)",
+  warn: "#F59E0B",
+  warnBg: "rgba(245,158,11,0.12)",
+  danger: "#EF4444",
+  dangerBg: "rgba(239,68,68,0.1)",
   success: "#10B981",
+  successBg: "rgba(16,185,129,0.12)",
   avatar: "#E2E8F0",
+  courtBg: "rgba(37,99,235,0.03)",
 };
 
-// 5 "slots" on the court. We'll absolutely position players here.
 const starterPositions: {
   top: number;
   left: number | "50%";
   right?: number;
 }[] = [
-  { top: 20, left: 30 }, // top-left
-  { top: 20, left: 240 }, // top-right
-  { top: 100, left: 60 }, // wing left
-  { top: 100, left: 210 }, // wing right
-  { top: 170, left: "50%" }, // center-ish (low post)
+  { top: moderateScale(20), left: moderateScale(30) },
+  { top: moderateScale(20), left: moderateScale(isTablet ? 280 : 240) },
+  { top: moderateScale(100), left: moderateScale(60) },
+  { top: moderateScale(100), left: moderateScale(isTablet ? 250 : 210) },
+  { top: moderateScale(170), left: "50%" },
 ];
 
 export default function GameCourtScreen() {
@@ -150,23 +185,22 @@ export default function GameCourtScreen() {
   // STATE
   // ----------------------
 
-  // roster
   const [starters, setStarters] = useState<Player[]>([]);
   const [bench, setBench] = useState<Player[]>([]);
-
-  const [manualSwapDraft, setManualSwapDraft] = useState<ManualSwapDraft | null>(
-    null
-  );
-  const [manualPrompt, setManualPrompt] =
-    useState<ManualPromptConfig | null>(null);
+  const [manualSwapDraft, setManualSwapDraft] = useState<ManualSwapDraft | null>(null);
+  const [manualPrompt, setManualPrompt] = useState<ManualPromptConfig | null>(null);
   const manualSwapActive = manualSwapDraft !== null;
-  const waitingForIncoming =
-    !!manualSwapDraft?.outgoing && !manualSwapDraft?.incoming;
-  const waitingForOutgoing =
-    !!manualSwapDraft?.incoming && !manualSwapDraft?.outgoing;
+  const waitingForIncoming = !!manualSwapDraft?.outgoing && !manualSwapDraft?.incoming;
+  const waitingForOutgoing = !!manualSwapDraft?.incoming && !manualSwapDraft?.outgoing;
   const manualSwapReason = manualSwapDraft?.reason ?? null;
   const manualSwapIncomingName = manualSwapDraft?.incoming?.name ?? null;
   const manualSwapOutgoingName = manualSwapDraft?.outgoing?.name ?? null;
+  const [draggingPlayer, setDraggingPlayer] = useState<Player | null>(null);
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
+  const [dragHoverTargetId, setDragHoverTargetId] = useState<string | null>(null);
+  const dragOriginRef = useRef<"bench" | null>(null);
+  const courtItemRefs = useRef<Map<string, View | null>>(new Map());
+  const courtLayoutsRef = useRef<Map<string, LayoutBox>>(new Map());
   const quarterCounterRef = useRef(1);
   const [lastQuarterLabel, setLastQuarterLabel] = useState<string | null>(null);
   const halfCounterRef = useRef(1);
@@ -180,49 +214,32 @@ export default function GameCourtScreen() {
   const latestSavedGameIdRef = useRef<string | null>(null);
   const gameInitializedRef = useRef(false);
   const [gameReady, setGameReady] = useState(false);
-  const saveCurrentGameStateRef =
-    useRef<(() => Promise<void>) | null>(null);
+  const saveCurrentGameStateRef = useRef<(() => Promise<void>) | null>(null);
   const [restoreComplete, setRestoreComplete] = useState(false);
-  const { finalize: finalizeParam } =
-    useLocalSearchParams<{ finalize?: string }>();
+  const { finalize: finalizeParam } = useLocalSearchParams<{ finalize?: string }>();
   const finalizeOnLoadRef = useRef(
     Array.isArray(finalizeParam)
       ? finalizeParam.includes("1") || finalizeParam.includes("true")
       : finalizeParam === "1" || finalizeParam === "true"
   );
 
-  // game settings (dynamic from storage)
-  const [halfLengthSeconds, setHalfLengthSeconds] = useState(
-    DEFAULT_HALF_LENGTH_SECONDS
-  );
-  const [subIntervalSeconds, setSubIntervalSeconds] = useState(
-    DEFAULT_SUB_INTERVAL_SECONDS
-  );
-  const [subWarningSeconds, setSubWarningSeconds] = useState(
-    DEFAULT_SUB_WARNING_SECONDS
-  );
+  const [halfLengthSeconds, setHalfLengthSeconds] = useState(DEFAULT_HALF_LENGTH_SECONDS);
+  const [subIntervalSeconds, setSubIntervalSeconds] = useState(DEFAULT_SUB_INTERVAL_SECONDS);
+  const [subWarningSeconds, setSubWarningSeconds] = useState(DEFAULT_SUB_WARNING_SECONDS);
   const [quarterBreakSeconds, setQuarterBreakSeconds] = useState<number>(0);
 
-  // clocks
   const [gameClock, setGameClock] = useState<number>(halfLengthSeconds);
-  const [subWindowClock, setSubWindowClock] =
-    useState<number>(subIntervalSeconds);
+  const [subWindowClock, setSubWindowClock] = useState<number>(subIntervalSeconds);
   const gameClockRef = useRef<number>(halfLengthSeconds);
   const subWindowClockRef = useRef<number>(subIntervalSeconds);
   const lastTickTimestampRef = useRef<number>(Date.now());
 
-  // pause state
   const [isPaused, setIsPaused] = useState<boolean>(false);
-
-  // upcoming planned sub
   const [pendingIn, setPendingIn] = useState<Player | null>(null);
   const [pendingOut, setPendingOut] = useState<Player | null>(null);
   const [subCountdownActive, setSubCountdownActive] = useState<boolean>(false);
-  const [pauseReason, setPauseReason] = useState<
-    "quarter" | "half" | "end" | null
-  >(null);
-  const [quarterPauseTriggered, setQuarterPauseTriggered] =
-    useState<boolean>(false);
+  const [pauseReason, setPauseReason] = useState<"quarter" | "half" | "end" | null>(null);
+  const [quarterPauseTriggered, setQuarterPauseTriggered] = useState<boolean>(false);
   const showPauseOverlay =
     !breakOverlayDismissed &&
     (pauseReason === "quarter" || pauseReason === "half" || pauseReason === "end");
@@ -259,15 +276,105 @@ export default function GameCourtScreen() {
     }
   }, [pauseReason]);
 
-  // tick ref
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const insets = useSafeAreaInsets();
   const playerCourtSecondsRef = useRef<Map<string, number>>(new Map());
   const startersRef = useRef<Player[]>([]);
 
+  const registerCourtItem = useCallback(
+    (playerId: string) => (node: View | null) => {
+      if (node) {
+        courtItemRefs.current.set(playerId, node);
+        requestAnimationFrame(() => {
+          const measurable = node as unknown as {
+            measureInWindow: (
+              callback: (pageX: number, pageY: number, width: number, height: number) => void
+            ) => void;
+          };
+          measurable.measureInWindow((pageX, pageY, width, height) => {
+            courtLayoutsRef.current.set(playerId, { pageX, pageY, width, height });
+          });
+        });
+      } else {
+        courtItemRefs.current.delete(playerId);
+        courtLayoutsRef.current.delete(playerId);
+      }
+    },
+    []
+  );
+
+  const refreshCourtLayout = useCallback((playerId: string) => {
+    const node = courtItemRefs.current.get(playerId);
+    if (!node) return;
+    const measurable = node as unknown as {
+      measureInWindow: (
+        callback: (pageX: number, pageY: number, width: number, height: number) => void
+      ) => void;
+    };
+    measurable.measureInWindow((pageX, pageY, width, height) => {
+      courtLayoutsRef.current.set(playerId, { pageX, pageY, width, height });
+    });
+  }, []);
+
+  const findCourtTarget = useCallback((pageX: number, pageY: number) => {
+    for (const [playerId, box] of courtLayoutsRef.current.entries()) {
+      if (
+        pageX >= box.pageX &&
+        pageX <= box.pageX + box.width &&
+        pageY >= box.pageY &&
+        pageY <= box.pageY + box.height
+      ) {
+        return playerId;
+      }
+    }
+    return null;
+  }, []);
+
+  const resetDragState = useCallback(() => {
+    setDraggingPlayer(null);
+    setDragPosition(null);
+    setDragHoverTargetId(null);
+    dragOriginRef.current = null;
+  }, []);
+
   // ----------------------
   // GAME HELPERS
   // ----------------------
+
+  const applyElapsedSeconds = useCallback(
+    (deltaSeconds: number) => {
+      if (deltaSeconds <= 0) return;
+
+      const newGameClock = Math.max(0, gameClockRef.current - deltaSeconds);
+      gameClockRef.current = newGameClock;
+      setGameClock(newGameClock);
+
+      const newSubWindowClock = Math.max(0, subWindowClockRef.current - deltaSeconds);
+      subWindowClockRef.current = newSubWindowClock;
+      setSubWindowClock(newSubWindowClock);
+
+      const secondsMap = playerCourtSecondsRef.current;
+      startersRef.current.forEach((player) => {
+        const prevSeconds = secondsMap.get(player.id) ?? 0;
+        secondsMap.set(player.id, prevSeconds + deltaSeconds);
+      });
+    },
+    []
+  );
+
+  const flushElapsedTime = useCallback(() => {
+    const now = Date.now();
+    if (isPaused || gameEndedRef.current) {
+      lastTickTimestampRef.current = now;
+      return;
+    }
+    const deltaSeconds = Math.floor((now - lastTickTimestampRef.current) / 1000);
+    if (deltaSeconds <= 0) {
+      return;
+    }
+    applyElapsedSeconds(deltaSeconds);
+    lastTickTimestampRef.current += deltaSeconds * 1000;
+  }, [applyElapsedSeconds, isPaused]);
 
   const getCourtSeconds = useCallback((player: Player | null | undefined) => {
     if (!player) return 0;
@@ -307,14 +414,8 @@ export default function GameCourtScreen() {
       if (!incomingPlayer || !outgoingPlayer) return;
 
       const subsMap = playerSubCountRef.current;
-      subsMap.set(
-        incomingPlayer.id,
-        (subsMap.get(incomingPlayer.id) ?? 0) + 1
-      );
-      subsMap.set(
-        outgoingPlayer.id,
-        (subsMap.get(outgoingPlayer.id) ?? 0) + 1
-      );
+      subsMap.set(incomingPlayer.id, (subsMap.get(incomingPlayer.id) ?? 0) + 1);
+      subsMap.set(outgoingPlayer.id, (subsMap.get(outgoingPlayer.id) ?? 0) + 1);
 
       setStarters((prevStarters) => {
         const withoutOut = prevStarters.filter((p) => p.id !== outgoingPlayer.id);
@@ -357,11 +458,7 @@ export default function GameCourtScreen() {
       players: playerSnapshots,
     };
 
-    const existing = await loadJSON<SavedGameSnapshot[]>(
-      KEYS.gameHistory,
-      []
-    );
-
+    const existing = await loadJSON<SavedGameSnapshot[]>(KEYS.gameHistory, []);
     const updated = [record, ...existing];
     await saveJSON(KEYS.gameHistory, updated);
     await removeJSON(KEYS.livePreview);
@@ -448,30 +545,25 @@ export default function GameCourtScreen() {
       gameStartTimestampRef.current = state.gameStartTimestamp ?? Date.now();
       gameEndedRef.current = state.gameEnded ?? false;
       latestSavedGameIdRef.current = state.latestSavedGameId ?? null;
-      quarterCounterRef.current = state.quarterCounter ?? 1;
-      halfCounterRef.current = state.halfCounter ?? 1;
 
       setStarters(startersClone);
       setBench(benchClone);
       setPendingIn(state.pendingIn ? { ...state.pendingIn } : null);
       setPendingOut(state.pendingOut ? { ...state.pendingOut } : null);
       setSubCountdownActive(state.subCountdownActive ?? false);
-      const fallbackSubWindow =
-        state.subIntervalSeconds ?? DEFAULT_SUB_INTERVAL_SECONDS;
-      const fallbackGameClock =
-        state.halfLengthSeconds ?? DEFAULT_HALF_LENGTH_SECONDS;
+
+      const fallbackSubWindow = state.subIntervalSeconds ?? DEFAULT_SUB_INTERVAL_SECONDS;
+      const fallbackGameClock = state.halfLengthSeconds ?? DEFAULT_HALF_LENGTH_SECONDS;
       const restoredSubWindow =
-        typeof state.subWindowClock === "number"
-          ? state.subWindowClock
-          : fallbackSubWindow;
+        typeof state.subWindowClock === "number" ? state.subWindowClock : fallbackSubWindow;
       const restoredGameClock =
-        typeof state.gameClock === "number"
-          ? state.gameClock
-          : fallbackGameClock;
+        typeof state.gameClock === "number" ? state.gameClock : fallbackGameClock;
+
       subWindowClockRef.current = restoredSubWindow;
       setSubWindowClock(restoredSubWindow);
       gameClockRef.current = restoredGameClock;
       setGameClock(restoredGameClock);
+
       const storedIsPaused = state.isPaused ?? false;
       setIsPaused(storedIsPaused);
       setPauseReason(state.pauseReason ?? null);
@@ -481,6 +573,7 @@ export default function GameCourtScreen() {
       setBreakOverlayDismissed(state.breakOverlayDismissed ?? false);
       setManualSwapDraft(null);
       setManualPrompt(null);
+
       setHalfLengthSeconds(
         typeof state.halfLengthSeconds === "number"
           ? state.halfLengthSeconds
@@ -497,26 +590,19 @@ export default function GameCourtScreen() {
           : DEFAULT_SUB_WARNING_SECONDS
       );
       setQuarterBreakSeconds(
-        typeof state.quarterBreakSeconds === "number"
-          ? state.quarterBreakSeconds
-          : 0
+        typeof state.quarterBreakSeconds === "number" ? state.quarterBreakSeconds : 0
       );
+
       const now = Date.now();
       if (!state.gameEnded && !storedIsPaused) {
         const savedAt = state.savedAt ?? now;
-        const elapsedSeconds = Math.max(
-          0,
-          Math.floor((now - savedAt) / 1000)
-        );
+        const elapsedSeconds = Math.max(0, Math.floor((now - savedAt) / 1000));
         if (elapsedSeconds > 0) {
           const adjustedGame = Math.max(0, gameClockRef.current - elapsedSeconds);
           gameClockRef.current = adjustedGame;
           setGameClock(adjustedGame);
 
-          const adjustedSub = Math.max(
-            0,
-            subWindowClockRef.current - elapsedSeconds
-          );
+          const adjustedSub = Math.max(0, subWindowClockRef.current - elapsedSeconds);
           subWindowClockRef.current = adjustedSub;
           setSubWindowClock(adjustedSub);
 
@@ -531,86 +617,6 @@ export default function GameCourtScreen() {
     },
     []
   );
-
-  const applyElapsedSeconds = useCallback(
-    (deltaSeconds: number) => {
-      if (deltaSeconds <= 0) return;
-
-      const newGameClock = Math.max(0, gameClockRef.current - deltaSeconds);
-      gameClockRef.current = newGameClock;
-      setGameClock(newGameClock);
-
-      const newSubWindowClock = Math.max(
-        0,
-        subWindowClockRef.current - deltaSeconds
-      );
-      subWindowClockRef.current = newSubWindowClock;
-      setSubWindowClock(newSubWindowClock);
-
-      const secondsMap = playerCourtSecondsRef.current;
-      startersRef.current.forEach((player) => {
-        const prevSeconds = secondsMap.get(player.id) ?? 0;
-        secondsMap.set(player.id, prevSeconds + deltaSeconds);
-      });
-    },
-    [setGameClock, setSubWindowClock]
-  );
-
-  const flushElapsedTime = useCallback(() => {
-    const now = Date.now();
-    if (isPaused || gameEndedRef.current) {
-      lastTickTimestampRef.current = now;
-      return;
-    }
-    const deltaSeconds = Math.floor(
-      (now - lastTickTimestampRef.current) / 1000
-    );
-    if (deltaSeconds <= 0) {
-      return;
-    }
-    applyElapsedSeconds(deltaSeconds);
-    lastTickTimestampRef.current += deltaSeconds * 1000;
-  }, [applyElapsedSeconds, isPaused]);
-
-saveCurrentGameStateRef.current = async () => {
-  if (!gameInitializedRef.current) return;
-  flushElapsedTime();
-  const savedAt = Date.now();
-  if (gameEndedRef.current) {
-    await removeJSON(KEYS.ongoingGame);
-    return;
-  }
-  const payload: PersistedGameState = {
-    version: CURRENT_GAME_STATE_VERSION,
-    savedAt,
-    starters: starters.map((player) => ({ ...player })),
-    bench: bench.map((player) => ({ ...player })),
-    initialRoster: initialRosterRef.current.map((player) => ({ ...player })),
-    pendingIn: pendingIn ? { ...pendingIn } : null,
-    pendingOut: pendingOut ? { ...pendingOut } : null,
-    subCountdownActive,
-    subWindowClock: subWindowClockRef.current,
-    gameClock: gameClockRef.current,
-    isPaused,
-    pauseReason,
-    quarterPauseTriggered,
-    lastQuarterLabel,
-    lastHalfLabel,
-    breakOverlayDismissed,
-    halfLengthSeconds,
-    subIntervalSeconds,
-    subWarningSeconds,
-    quarterBreakSeconds,
-    quarterCounter: quarterCounterRef.current,
-    halfCounter: halfCounterRef.current,
-    playerCourtSeconds: Array.from(playerCourtSecondsRef.current.entries()),
-    playerSubCounts: Array.from(playerSubCountRef.current.entries()),
-    gameStartTimestamp: gameStartTimestampRef.current,
-    gameEnded: gameEndedRef.current,
-    latestSavedGameId: latestSavedGameIdRef.current,
-  };
-  await saveJSON(KEYS.ongoingGame, payload);
-};
 
   const triggerSaveCurrentGameState = useCallback(() => {
     const fn = saveCurrentGameStateRef.current;
@@ -641,16 +647,54 @@ saveCurrentGameStateRef.current = async () => {
     lastTickTimestampRef.current = Date.now();
   }, [flushElapsedTime, persistGameHistory, subIntervalSeconds]);
 
+  // Save function
+  saveCurrentGameStateRef.current = async () => {
+    if (!gameInitializedRef.current) return;
+    flushElapsedTime();
+    const savedAt = Date.now();
+    if (gameEndedRef.current) {
+      await removeJSON(KEYS.ongoingGame);
+      return;
+    }
+    const payload: PersistedGameState = {
+      version: CURRENT_GAME_STATE_VERSION,
+      savedAt,
+      starters: starters.map((player) => ({ ...player })),
+      bench: bench.map((player) => ({ ...player })),
+      initialRoster: initialRosterRef.current.map((player) => ({ ...player })),
+      pendingIn: pendingIn ? { ...pendingIn } : null,
+      pendingOut: pendingOut ? { ...pendingOut } : null,
+      subCountdownActive,
+      subWindowClock: subWindowClockRef.current,
+      gameClock: gameClockRef.current,
+      isPaused,
+      pauseReason,
+      quarterPauseTriggered,
+      lastQuarterLabel,
+      lastHalfLabel,
+      breakOverlayDismissed,
+      halfLengthSeconds,
+      subIntervalSeconds,
+      subWarningSeconds,
+      quarterBreakSeconds,
+      quarterCounter: quarterCounterRef.current,
+      halfCounter: halfCounterRef.current,
+      playerCourtSeconds: Array.from(playerCourtSecondsRef.current.entries()),
+      playerSubCounts: Array.from(playerSubCountRef.current.entries()),
+      gameStartTimestamp: gameStartTimestampRef.current,
+      gameEnded: gameEndedRef.current,
+      latestSavedGameId: latestSavedGameIdRef.current,
+    };
+    await saveJSON(KEYS.ongoingGame, payload);
+  };
+
   // ----------------------
   // LOAD INITIAL DATA
   // ----------------------
   useEffect(() => {
     let isActive = true;
     (async () => {
-      const persisted = await loadJSON<PersistedGameState | null>(
-        KEYS.ongoingGame,
-        null
-      );
+      const persisted = await loadJSON<PersistedGameState | null>(KEYS.ongoingGame, null);
       if (!isActive) return;
 
       if (
@@ -672,13 +716,8 @@ saveCurrentGameStateRef.current = async () => {
 
       await removeJSON(KEYS.livePreview);
 
-      // load all players
-      const allPlayers =
-        (await loadJSON<Player[]>(KEYS.playersDB, [])) ?? ([] as Player[]);
-      // who is selected to play today
-      const todaysIds =
-        (await loadJSON<string[]>(KEYS.selectedToday, [])) ?? ([] as string[]);
-      // filter actual player objects
+      const allPlayers = (await loadJSON<Player[]>(KEYS.playersDB, [])) ?? ([] as Player[]);
+      const todaysIds = (await loadJSON<string[]>(KEYS.selectedToday, [])) ?? ([] as string[]);
       const todaysPlayers = allPlayers.filter((p) => todaysIds.includes(p.id));
 
       const storedLineup =
@@ -732,7 +771,6 @@ saveCurrentGameStateRef.current = async () => {
       setStarters(startersList);
       setBench(benchList);
 
-      // Load game settings (if coach customized them earlier)
       type StoredGameSettings = {
         halfLengthSeconds?: number;
         subIntervalSeconds?: number;
@@ -742,10 +780,7 @@ saveCurrentGameStateRef.current = async () => {
         subsTime?: number;
       };
 
-      const settings = (await loadJSON(
-        KEYS.gameSettings,
-        null
-      )) as StoredGameSettings | null;
+      const settings = (await loadJSON(KEYS.gameSettings, null)) as StoredGameSettings | null;
 
       const halfMinutes =
         typeof settings?.halfLengthSeconds === "number"
@@ -780,7 +815,6 @@ saveCurrentGameStateRef.current = async () => {
       setLastQuarterLabel(null);
       setLastHalfLabel(null);
 
-      // initialize clocks using that data
       setGameClock(halfSeconds);
       setSubWindowClock(subsSeconds);
       setIsPaused(false);
@@ -803,7 +837,7 @@ saveCurrentGameStateRef.current = async () => {
       triggerSaveCurrentGameState();
     }, 5000);
     return () => clearInterval(interval);
-  }, [flushElapsedTime, gameReady, triggerSaveCurrentGameState]);
+  }, [gameReady, triggerSaveCurrentGameState]);
 
   useEffect(() => {
     return () => {
@@ -839,14 +873,11 @@ saveCurrentGameStateRef.current = async () => {
       }
     };
 
-    const subscription = AppState.addEventListener(
-      "change",
-      handleAppStateChange
-    );
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => {
       subscription.remove();
     };
-  }, [gameReady, triggerSaveCurrentGameState]);
+  }, [flushElapsedTime, gameReady, triggerSaveCurrentGameState]);
 
   useEffect(() => {
     if (!restoreComplete) return;
@@ -900,7 +931,7 @@ saveCurrentGameStateRef.current = async () => {
       return;
     }
 
-    if (tickRef.current) return; // already running
+    if (tickRef.current) return;
 
     lastTickTimestampRef.current = Date.now();
     tickRef.current = setInterval(() => {
@@ -915,7 +946,6 @@ saveCurrentGameStateRef.current = async () => {
     };
   }, [flushElapsedTime, isPaused]);
 
-  // halftime end
   useEffect(() => {
     if (gameClock <= 0) {
       if (!isPaused) {
@@ -936,11 +966,11 @@ saveCurrentGameStateRef.current = async () => {
           quarterCounterRef.current = 1;
           finalizeGame();
         } else {
-      setPauseReason("half");
-      setSubWindowClock(subIntervalSeconds);
-      subWindowClockRef.current = subIntervalSeconds;
-      quarterCounterRef.current = 1;
-      const plan = pickPendingSwap(starters, bench);
+          setPauseReason("half");
+          setSubWindowClock(subIntervalSeconds);
+          subWindowClockRef.current = subIntervalSeconds;
+          quarterCounterRef.current = 1;
+          const plan = pickPendingSwap(starters, bench);
           if (plan.incoming || plan.outgoing) {
             setPendingIn(plan.incoming ?? null);
             setPendingOut(plan.outgoing ?? null);
@@ -950,23 +980,10 @@ saveCurrentGameStateRef.current = async () => {
         halfCounterRef.current += 1;
       }
     }
-  }, [
-    gameClock,
-    isPaused,
-    subIntervalSeconds,
-    finalizeGame,
-    pickPendingSwap,
-    starters,
-    bench,
-  ]);
+  }, [gameClock, isPaused, subIntervalSeconds, finalizeGame, pickPendingSwap, starters, bench]);
 
   useEffect(() => {
-    if (
-      isPaused ||
-      quarterBreakSeconds === 0 ||
-      quarterPauseTriggered ||
-      gameClock <= 0
-    ) {
+    if (isPaused || quarterBreakSeconds === 0 || quarterPauseTriggered || gameClock <= 0) {
       return;
     }
     if (gameClock <= quarterBreakSeconds) {
@@ -1005,11 +1022,9 @@ saveCurrentGameStateRef.current = async () => {
   // SUB LOGIC
   // ----------------------
 
-  // sub countdown + auto sub trigger
   useEffect(() => {
     if (isPaused) return;
 
-    // show warning banner / arrows if within warning window but not 0
     if (subWindowClock <= subWarningSeconds && subWindowClock > 0) {
       const plan = pickPendingSwap(starters, bench);
       setPendingIn(plan.incoming ?? null);
@@ -1019,7 +1034,6 @@ saveCurrentGameStateRef.current = async () => {
       setSubCountdownActive(false);
     }
 
-    // at 0, actually sub & reset timer
     if (subWindowClock === 0) {
       const plan = pickPendingSwap(starters, bench);
       if (plan.incoming && plan.outgoing) {
@@ -1040,8 +1054,6 @@ saveCurrentGameStateRef.current = async () => {
     starters,
     bench,
     isPaused,
-    pendingIn,
-    pendingOut,
     pickPendingSwap,
     performSub,
   ]);
@@ -1079,28 +1091,18 @@ saveCurrentGameStateRef.current = async () => {
     setManualPrompt(null);
   }
 
-  function confirmManualSwap(
-    incoming: Player,
-    outgoing: Player,
-    reason: string
-  ) {
+  function confirmManualSwap(incoming: Player, outgoing: Player, reason: string) {
     setManualPrompt({ type: "confirm", incoming, outgoing, reason });
   }
 
   function handleStarterTap(player: Player) {
     if (waitingForOutgoing && manualSwapDraft?.incoming) {
-      confirmManualSwap(
-        manualSwapDraft.incoming,
-        player,
-        manualSwapDraft.reason
-      );
+      confirmManualSwap(manualSwapDraft.incoming, player, manualSwapDraft.reason);
       return;
     }
 
     if (waitingForIncoming) {
-      setManualSwapDraft((prev) =>
-        prev ? { ...prev, outgoing: player } : prev
-      );
+      setManualSwapDraft((prev) => (prev ? { ...prev, outgoing: player } : prev));
       return;
     }
 
@@ -1114,9 +1116,7 @@ saveCurrentGameStateRef.current = async () => {
     }
 
     if (waitingForOutgoing) {
-      setManualSwapDraft((prev) =>
-        prev ? { ...prev, incoming: player } : prev
-      );
+      setManualSwapDraft((prev) => (prev ? { ...prev, incoming: player } : prev));
       return;
     }
 
@@ -1133,8 +1133,6 @@ saveCurrentGameStateRef.current = async () => {
     }
     flushElapsedTime();
     if (isPaused) {
-      // resume
-      // if we were at 0 (end of half), treat this as starting next half:
       if (gameClock === 0) {
         setGameClock(halfLengthSeconds);
         setSubWindowClock(subIntervalSeconds);
@@ -1153,7 +1151,6 @@ saveCurrentGameStateRef.current = async () => {
       setIsPaused(false);
       lastTickTimestampRef.current = Date.now();
     } else {
-      // pause
       setPauseReason(null);
       setIsPaused(true);
       lastTickTimestampRef.current = Date.now();
@@ -1166,20 +1163,16 @@ saveCurrentGameStateRef.current = async () => {
       return;
     }
 
-    Alert.alert(
-      "End game?",
-      "Are you sure you want to wrap up this session?",
-      [
-        { text: "No", style: "cancel" },
-        {
-          text: "Yes",
-          style: "destructive",
-          onPress: () => {
-            finalizeGame();
-          },
+    Alert.alert("End game?", "Are you sure you want to wrap up this session?", [
+      { text: "No", style: "cancel" },
+      {
+        text: "Yes",
+        style: "destructive",
+        onPress: () => {
+          finalizeGame();
         },
-      ]
-    );
+      },
+    ]);
   }
 
   const overlayScale = overlayAnim.interpolate({
@@ -1201,8 +1194,7 @@ saveCurrentGameStateRef.current = async () => {
       pauseOverlayTitle = lastQuarterLabel
         ? `${lastQuarterLabel} complete`
         : "Quarter break";
-      pauseOverlaySubtitle =
-        "Great job. Rotate players and tap resume when you're ready.";
+      pauseOverlaySubtitle = "Great job. Rotate players and tap resume when you're ready.";
       pauseOverlayPrimaryLabel = "Resume play";
       pauseOverlayPrimaryAction = () => {
         if (isPaused) {
@@ -1215,11 +1207,8 @@ saveCurrentGameStateRef.current = async () => {
       };
     } else if (pauseReason === "half") {
       pauseOverlayIcon = "time-outline";
-      pauseOverlayTitle = lastHalfLabel
-        ? `${lastHalfLabel} ended`
-        : "Halftime break";
-      pauseOverlaySubtitle =
-        "Make adjustments, grab water, then start the next half.";
+      pauseOverlayTitle = lastHalfLabel ? `${lastHalfLabel} ended` : "Halftime break";
+      pauseOverlaySubtitle = "Make adjustments, grab water, then start the next half.";
       pauseOverlayPrimaryLabel = "Start next half";
       pauseOverlayPrimaryAction = () => {
         if (isPaused) {
@@ -1257,10 +1246,7 @@ saveCurrentGameStateRef.current = async () => {
 
   const isEndOverlay = pauseReason === "end";
   const overlayReopenAvailable =
-    breakOverlayDismissed &&
-    isPaused &&
-    pauseReason !== null &&
-    pauseReason !== "end";
+    breakOverlayDismissed && isPaused && pauseReason !== null && pauseReason !== "end";
   const overlayPlanText = useMemo(() => {
     if (!pauseReason || pauseReason === "end") return null;
     if (pauseReason === "quarter" || pauseReason === "half") {
@@ -1281,7 +1267,6 @@ saveCurrentGameStateRef.current = async () => {
   // RENDER HELPERS
   // ----------------------
 
-  // players on court in fixed spots
   const renderStarterOnCourt = () => {
     return starters.slice(0, 5).map((player, i) => {
       const pos = starterPositions[i] || starterPositions[0];
@@ -1289,15 +1274,13 @@ saveCurrentGameStateRef.current = async () => {
       const isManualOutgoing = manualSwapDraft?.outgoing?.id === player.id;
       const showManualHighlight = waitingForOutgoing || isManualOutgoing;
 
-      // calc style for the 'left:"50%"' case
       const absStyle: any = {
         position: "absolute",
         top: pos.top,
       };
       if (typeof pos.left === "string") {
-        // center avatar if using left:"50%"
         absStyle.left = "50%";
-        absStyle.transform = [{ translateX: -UI.avatar / 2 }]; // half avatar size
+        absStyle.transform = [{ translateX: -UI.avatar / 2 }];
       } else {
         absStyle.left = pos.left;
       }
@@ -1310,7 +1293,7 @@ saveCurrentGameStateRef.current = async () => {
           key={player.id}
           style={[styles.courtPlayerWrap, absStyle]}
           onPress={() => handleStarterTap(player)}
-          hitSlop={10}
+          hitSlop={12}
         >
           <View
             style={[
@@ -1320,16 +1303,18 @@ saveCurrentGameStateRef.current = async () => {
               isManualOutgoing && styles.avatarCourtManualTarget,
             ]}
           >
-            <Ionicons name="person" size={20} color={COLORS.text} />
+            <Ionicons name="person" size={moderateScale(20)} color={COLORS.text} />
           </View>
 
-          <Text style={styles.playerName}>{player.name}</Text>
+          <Text style={styles.playerName} numberOfLines={1}>
+            {player.name}
+          </Text>
 
           {isOutSoon ? (
             <View style={styles.arrowDownWrap}>
               <Ionicons
                 name="arrow-down"
-                size={16}
+                size={moderateScale(16)}
                 color={COLORS.danger}
                 style={{ marginTop: 2 }}
               />
@@ -1340,7 +1325,6 @@ saveCurrentGameStateRef.current = async () => {
     });
   };
 
-  // single bench chip (grid style)
   function renderBenchItem(p: Player) {
     const isInSoon = pendingIn && pendingIn.id === p.id;
     const isManualIncoming = manualSwapDraft?.incoming?.id === p.id;
@@ -1348,16 +1332,12 @@ saveCurrentGameStateRef.current = async () => {
     const highlightAsSelected = waitingForOutgoing && isManualIncoming;
 
     return (
-      <Pressable
-        key={p.id}
-        style={styles.benchItem}
-        onPress={() => handleBenchTap(p)}
-      >
+      <Pressable key={p.id} style={styles.benchItem} onPress={() => handleBenchTap(p)}>
         <View style={styles.benchArrowSlot}>
           {isInSoon ? (
             <Ionicons
               name="arrow-up"
-              size={16}
+              size={moderateScale(16)}
               color={COLORS.success}
               style={{ marginBottom: 2 }}
             />
@@ -1372,7 +1352,7 @@ saveCurrentGameStateRef.current = async () => {
             highlightAsSelected && styles.avatarBenchManualMode,
           ]}
         >
-          <Ionicons name="person" size={20} color={COLORS.text} />
+          <Ionicons name="person" size={moderateScale(20)} color={COLORS.text} />
         </View>
 
         <Text style={styles.benchName} numberOfLines={1}>
@@ -1446,12 +1426,7 @@ saveCurrentGameStateRef.current = async () => {
     }
 
     return (
-      <Modal
-        visible
-        transparent
-        animationType="fade"
-        onRequestClose={closePrompt}
-      >
+      <Modal visible transparent animationType="fade" onRequestClose={closePrompt}>
         <View style={styles.modalBackdrop}>
           <Pressable
             style={styles.modalOverlay}
@@ -1465,26 +1440,26 @@ saveCurrentGameStateRef.current = async () => {
           />
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{title}</Text>
-            {subtitle ? (
-              <Text style={styles.modalSubtitle}>{subtitle}</Text>
-            ) : null}
+            {subtitle ? <Text style={styles.modalSubtitle}>{subtitle}</Text> : null}
 
             <View style={styles.modalOptions}>
               {options.map((option, index) => {
-                const optionStyles = [styles.modalOption];
+                let optionStyle: StyleProp<ViewStyle> = styles.modalOption;
                 if (option.tone === "accent") {
-                  optionStyles.push(styles.modalOptionAccent);
+                  optionStyle = StyleSheet.compose(optionStyle, styles.modalOptionAccent);
                 }
                 if (option.tone === "danger") {
-                  optionStyles.push(styles.modalOptionDanger);
+                  optionStyle = StyleSheet.compose(optionStyle, styles.modalOptionDanger);
                 }
                 return (
                   <View
                     key={option.label}
-                    style={index !== options.length - 1 ? styles.modalOptionSpacer : undefined}
+                    style={
+                      index !== options.length - 1 ? styles.modalOptionSpacer : undefined
+                    }
                   >
                     <Pressable
-                      style={optionStyles}
+                      style={optionStyle}
                       onPress={() => {
                         option.action();
                         if (!isConfirmPrompt) {
@@ -1517,10 +1492,8 @@ saveCurrentGameStateRef.current = async () => {
     );
   }
 
-  // countdown label for the next sub window
   const subCountdownLabel = useMemo(() => {
     if (!subCountdownActive) return null;
-    // We can show who is swapping to make it more coach-friendly:
     const outName = pendingOut?.name ?? "—";
     const inName = pendingIn?.name ?? "—";
     return `Sub in ${formatClock(subWindowClock)}  (${inName} ↔ ${outName})`;
@@ -1547,8 +1520,7 @@ saveCurrentGameStateRef.current = async () => {
       quarterBreakSeconds > 0 &&
       gameClock <= quarterBreakSeconds + 60 &&
       gameClock > quarterBreakSeconds;
-    const quarterReached =
-      quarterBreakSeconds > 0 && gameClock <= quarterBreakSeconds;
+    const quarterReached = quarterBreakSeconds > 0 && gameClock <= quarterBreakSeconds;
     return finalMinute || quarterWarning || quarterReached;
   }, [gameClock, quarterBreakSeconds, quarterPauseTriggered]);
 
@@ -1560,7 +1532,9 @@ saveCurrentGameStateRef.current = async () => {
   const manualSwapMessage = useMemo(() => {
     if (!manualSwapActive) return null;
     if (waitingForIncoming && manualSwapOutgoingName) {
-      return `Pick a bench replacement for ${manualSwapOutgoingName} (${manualSwapReason ?? "Manual"})`;
+      return `Pick a bench replacement for ${manualSwapOutgoingName} (${
+        manualSwapReason ?? "Manual"
+      })`;
     }
     if (waitingForOutgoing && manualSwapIncomingName) {
       return `Choose who leaves for ${manualSwapIncomingName} (${manualSwapReason ?? "Manual"})`;
@@ -1574,12 +1548,10 @@ saveCurrentGameStateRef.current = async () => {
     manualSwapIncomingName,
     manualSwapOutgoingName,
   ]);
+
   const benchHelperMessage =
     manualSwapMessage ??
-    (pauseReason &&
-    pauseReason !== "end" &&
-    pendingIn?.name &&
-    pendingOut?.name
+    (pauseReason && pauseReason !== "end" && pendingIn?.name && pendingOut?.name
       ? `Auto plan: ${pendingIn.name} ↔ ${pendingOut.name}`
       : "Tap a player to manage manual subs.");
 
@@ -1591,301 +1563,280 @@ saveCurrentGameStateRef.current = async () => {
     <>
       <SafeAreaView style={styles.screen} edges={["top"]}>
         <View style={styles.wrapper}>
-        <View style={styles.headerRow}>
-          <Pressable
-            onPress={() => router.back()}
-            hitSlop={10}
-            style={styles.iconButton}
-          >
-            <Ionicons name="chevron-back" size={20} color={COLORS.text} />
-          </Pressable>
-
-          <Text style={styles.headerTitle}>Game Court</Text>
-
-          <View style={styles.headerActions}>
+          <View style={styles.headerRow}>
             <Pressable
-              onPress={openStatsScreen}
-              style={styles.headerStatAction}
-              hitSlop={10}
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={styles.iconButton}
+            >
+              <Ionicons name="chevron-back" size={moderateScale(20)} color={COLORS.text} />
+            </Pressable>
+
+            <Text style={styles.headerTitle}>Game Court</Text>
+
+            <View style={styles.headerActions}>
+              <Pressable onPress={openStatsScreen} style={styles.headerStatAction} hitSlop={12}>
+                <Ionicons name="stats-chart" size={moderateScale(16)} color={COLORS.accent} />
+                {!isTinyDevice && <Text style={styles.headerStatText}>Stats</Text>}
+              </Pressable>
+
+              <Pressable onPress={endGame} style={styles.headerAction} hitSlop={12}>
+                <Ionicons name="stop" size={moderateScale(16)} color={COLORS.danger} />
+                {!isTinyDevice && <Text style={styles.headerActionText}>End</Text>}
+              </Pressable>
+            </View>
+          </View>
+
+          {overlayReopenAvailable ? (
+            <Pressable
+              style={styles.overlayChip}
+              onPress={() => setBreakOverlayDismissed(false)}
+              hitSlop={12}
             >
               <Ionicons
-                name="stats-chart"
-                size={16}
+                name="information-circle-outline"
+                size={moderateScale(16)}
                 color={COLORS.accent}
-                style={{ marginRight: 6 }}
               />
-              <Text style={styles.headerStatText}>Stats</Text>
+              <Text style={styles.overlayChipText}>Show break summary</Text>
             </Pressable>
+          ) : null}
 
-            <Pressable onPress={endGame} style={styles.headerAction} hitSlop={10}>
-              <Ionicons
-                name="stop"
-                size={16}
-                color={COLORS.danger}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.headerActionText}>End</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {overlayReopenAvailable ? (
-          <Pressable
-            style={styles.overlayChip}
-            onPress={() => setBreakOverlayDismissed(false)}
-            hitSlop={10}
-          >
-            <Ionicons
-              name="information-circle-outline"
-              size={16}
-              color={COLORS.accent}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={styles.overlayChipText}>Show break summary</Text>
-          </Pressable>
-        ) : null}
-
-        <View style={styles.gameMetaCard}>
-          <View style={styles.gameMetaLeft}>
-            <Text style={styles.clockLabel}>Game clock</Text>
-            <View style={styles.clockReadoutRow}>
-              <Text
-                style={[
-                  styles.clockValue,
-                  clockIsCritical && styles.clockValueCritical,
-                ]}
-              >
-                {formatClock(gameClock)}
-              </Text>
-              <View
-                style={[
-                  styles.statusPill,
-                  isPaused ? styles.statusPaused : styles.statusLive,
-                ]}
-              >
+          <View style={styles.gameMetaCard}>
+            <View style={styles.gameMetaLeft}>
+              <Text style={styles.clockLabel}>Game clock</Text>
+              <View style={styles.clockReadoutRow}>
+                <Text
+                  style={[
+                    styles.clockValue,
+                    clockIsCritical && styles.clockValueCritical,
+                  ]}
+                >
+                  {formatClock(gameClock)}
+                </Text>
                 <View
                   style={[
-                    styles.statusDot,
-                    isPaused ? styles.statusDotPaused : styles.statusDotLive,
+                    styles.statusPill,
+                    isPaused ? styles.statusPaused : styles.statusLive,
                   ]}
+                >
+                  <View
+                    style={[
+                      styles.statusDot,
+                      isPaused ? styles.statusDotPaused : styles.statusDotLive,
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.statusText,
+                      isPaused ? styles.statusTextPaused : styles.statusTextLive,
+                    ]}
+                  >
+                    {isPaused ? "Paused" : "Live"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.gameMetaRight}>
+              <Pressable
+                onPress={togglePause}
+                style={[
+                  styles.pauseButton,
+                  isPaused && styles.pauseButtonActive,
+                  pauseReason === "end" && styles.pauseButtonDisabled,
+                ]}
+                hitSlop={12}
+                disabled={pauseReason === "end"}
+              >
+                <Ionicons
+                  name={isPaused ? "play" : "pause"}
+                  size={moderateScale(16)}
+                  color={
+                    pauseReason === "end"
+                      ? COLORS.textMuted
+                      : isPaused
+                      ? COLORS.success
+                      : COLORS.accent
+                  }
+                  style={{ marginRight: 6 }}
                 />
                 <Text
                   style={[
-                    styles.statusText,
-                    isPaused ? styles.statusTextPaused : styles.statusTextLive,
+                    styles.pauseButtonText,
+                    isPaused && styles.pauseButtonTextActive,
+                    pauseReason === "end" && styles.pauseButtonTextDisabled,
                   ]}
                 >
-                  {isPaused ? "Paused" : "Live"}
+                  {pauseReason === "end" ? "Ended" : isPaused ? "Resume" : "Pause"}
                 </Text>
+              </Pressable>
+
+              <View style={styles.metaHintRow}>
+                <Ionicons
+                  name="sync"
+                  size={moderateScale(14)}
+                  color={COLORS.textMuted}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.metaHint}>Subs every {subIntervalLabel} min</Text>
               </View>
             </View>
           </View>
 
-          <View style={styles.gameMetaRight}>
-            <Pressable
-              onPress={togglePause}
-              style={[
-                styles.pauseButton,
-                isPaused && styles.pauseButtonActive,
-                pauseReason === "end" && styles.pauseButtonDisabled,
-              ]}
-              hitSlop={10}
-              disabled={pauseReason === "end"}
-            >
-              <Ionicons
-                name={isPaused ? "play" : "pause"}
-                size={16}
-                color={
-                  pauseReason === "end"
-                    ? COLORS.textMuted
-                    : isPaused
-                    ? COLORS.success
-                    : COLORS.accent
-                }
-                style={{ marginRight: 6 }}
-              />
-              <Text
-                style={[
-                  styles.pauseButtonText,
-                  isPaused && styles.pauseButtonTextActive,
-                  pauseReason === "end" && styles.pauseButtonTextDisabled,
-                ]}
-              >
-                {pauseReason === "end"
-                  ? "Ended"
-                  : isPaused
-                  ? "Resume"
-                  : "Pause"}
-              </Text>
-            </Pressable>
-
-            <View style={styles.metaHintRow}>
-              <Ionicons
-                name="sync"
-                size={14}
-                color={COLORS.textMuted}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.metaHint}>
-                Subs every {subIntervalLabel} min
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.subMessageSlot}>
-          {subCountdownLabel ? (
-            <View style={styles.subCountdownBar}>
-              <Ionicons
-                name="time"
-                size={16}
-                color={COLORS.warn}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.subCountdownText}>{subCountdownLabel}</Text>
-            </View>
-          ) : (
-            <Text style={styles.clockHelper}>{helperText}</Text>
-          )}
-        </View>
-
-        <View style={styles.courtCard}>
-          <Image
-            source={require("../../assets/images/empty-court-image.png")}
-            style={styles.courtImage}
-            resizeMode="contain"
-          />
-          {renderStarterOnCourt()}
-        </View>
-
-        <View style={styles.benchSection}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Bench</Text>
-            <View style={styles.manualHintWrap}>
-              <Text style={styles.manualHint}>{benchHelperMessage}</Text>
-              {manualSwapActive ? (
-                <Pressable onPress={cancelManualSwap} hitSlop={10}>
-                  <Text style={styles.manualCancel}>Cancel</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-
-          <ScrollView
-            style={styles.benchScroll}
-            contentContainerStyle={styles.benchRow}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-          >
-            {bench.length === 0 ? (
-              <View style={styles.benchEmpty}>
+          <View style={styles.subMessageSlot}>
+            {subCountdownLabel ? (
+              <View style={styles.subCountdownBar}>
                 <Ionicons
-                  name="people-circle-outline"
-                  size={24}
-                  color={COLORS.textMuted}
-                  style={{ marginBottom: 6 }}
+                  name="time"
+                  size={moderateScale(16)}
+                  color={COLORS.warn}
+                  style={{ marginRight: 6 }}
                 />
-                <Text style={styles.benchEmptyText}>
-                  No bench players available. Add more in lineup.
-                </Text>
+                <Text style={styles.subCountdownText}>{subCountdownLabel}</Text>
               </View>
             ) : (
-              bench.map((p) => renderBenchItem(p))
+              <Text style={styles.clockHelper}>{helperText}</Text>
             )}
-          </ScrollView>
-        </View>
+          </View>
+
+          <View style={styles.courtCard}>
+            <Image
+              source={require("../../assets/images/empty-court-image.png")}
+              style={styles.courtImage}
+              resizeMode="contain"
+            />
+            {renderStarterOnCourt()}
+          </View>
+
+          <View style={styles.benchSection}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Bench</Text>
+              <View style={styles.manualHintWrap}>
+                <Text style={styles.manualHint}>{benchHelperMessage}</Text>
+                {manualSwapActive ? (
+                  <Pressable onPress={cancelManualSwap} hitSlop={12}>
+                    <Text style={styles.manualCancel}>Cancel</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+
+            <ScrollView
+              style={styles.benchScroll}
+              contentContainerStyle={styles.benchRow}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {bench.length === 0 ? (
+                <View style={styles.benchEmpty}>
+                  <Ionicons
+                    name="people-circle-outline"
+                    size={moderateScale(24)}
+                    color={COLORS.textMuted}
+                    style={{ marginBottom: 6 }}
+                  />
+                  <Text style={styles.benchEmptyText}>
+                    No bench players available. Add more in lineup.
+                  </Text>
+                </View>
+              ) : (
+                bench.map((p) => renderBenchItem(p))
+              )}
+            </ScrollView>
+          </View>
         </View>
 
-      <View style={[styles.bottomPanel, { paddingBottom: 16 + insets.bottom }]}>
-        <Pressable
-          style={styles.secondaryDockButton}
-          onPress={() => router.push("/game-settings/lineup")}
-          hitSlop={10}
+        <View style={[styles.bottomPanel, { paddingBottom: Math.max(16, insets.bottom) }]}>
+          <Pressable
+            style={styles.secondaryDockButton}
+            onPress={() => router.push("/game-settings/lineup")}
+            hitSlop={12}
           >
-            <Ionicons name="people" size={18} color={COLORS.accent} />
+            <Ionicons name="people" size={moderateScale(18)} color={COLORS.accent} />
             <Text style={styles.secondaryDockText}>Edit lineup</Text>
           </Pressable>
 
           <Pressable
             style={styles.secondaryDockButton}
             onPress={() => router.push("/game-settings")}
-            hitSlop={10}
+            hitSlop={12}
           >
-            <Ionicons name="settings-outline" size={18} color={COLORS.accent} />
+            <Ionicons name="settings-outline" size={moderateScale(18)} color={COLORS.accent} />
             <Text style={styles.secondaryDockText}>Game settings</Text>
-        </Pressable>
-      </View>
-    </SafeAreaView>
-
-    {showPauseOverlay ? (
-      <View style={styles.pauseOverlay} pointerEvents="auto">
-        <Animated.View
-          style={[
-            styles.pauseOverlayCard,
-            {
-              opacity: overlayAnim,
-              transform: [{ scale: overlayScale }],
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.pauseOverlayIconWrap,
-              isEndOverlay && styles.pauseOverlayIconWrapSuccess,
-            ]}
-          >
-            <Ionicons
-              name={pauseOverlayIcon}
-              size={28}
-              color={isEndOverlay ? COLORS.success : COLORS.accent}
-            />
-          </View>
-          <Text style={styles.pauseOverlayTitle}>{pauseOverlayTitle}</Text>
-          {pauseOverlaySubtitle ? (
-            <Text style={styles.pauseOverlaySubtitle}>{pauseOverlaySubtitle}</Text>
-          ) : null}
-
-          {overlayPlanText ? (
-            <View style={styles.pauseOverlayPlan}>
-              <Ionicons
-                name="swap-horizontal"
-                size={18}
-                color={COLORS.accent}
-                style={{ marginRight: 8 }}
-              />
-              <Text style={styles.pauseOverlayPlanText}>{overlayPlanText}</Text>
-            </View>
-          ) : null}
-
-          <Pressable
-            style={[
-              styles.pauseOverlayPrimary,
-              isEndOverlay && styles.pauseOverlayPrimaryEnd,
-            ]}
-            onPress={pauseOverlayPrimaryAction ?? (() => {})}
-            disabled={!pauseOverlayPrimaryAction}
-          >
-            <Text style={styles.pauseOverlayPrimaryText}>
-              {pauseOverlayPrimaryLabel || "Continue"}
-            </Text>
           </Pressable>
+        </View>
+      </SafeAreaView>
 
-          {pauseOverlaySecondaryLabel && pauseOverlaySecondaryAction ? (
-            <Pressable
-              style={styles.pauseOverlaySecondary}
-              onPress={pauseOverlaySecondaryAction}
+      {showPauseOverlay ? (
+        <View style={styles.pauseOverlay} pointerEvents="auto">
+          <Animated.View
+            style={[
+              styles.pauseOverlayCard,
+              {
+                opacity: overlayAnim,
+                transform: [{ scale: overlayScale }],
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.pauseOverlayIconWrap,
+                isEndOverlay && styles.pauseOverlayIconWrapSuccess,
+              ]}
             >
-              <Text style={styles.pauseOverlaySecondaryText}>
-                {pauseOverlaySecondaryLabel}
+              <Ionicons
+                name={pauseOverlayIcon}
+                size={moderateScale(28)}
+                color={isEndOverlay ? COLORS.success : COLORS.accent}
+              />
+            </View>
+            <Text style={styles.pauseOverlayTitle}>{pauseOverlayTitle}</Text>
+            {pauseOverlaySubtitle ? (
+              <Text style={styles.pauseOverlaySubtitle}>{pauseOverlaySubtitle}</Text>
+            ) : null}
+
+            {overlayPlanText ? (
+              <View style={styles.pauseOverlayPlan}>
+                <Ionicons
+                  name="swap-horizontal"
+                  size={moderateScale(18)}
+                  color={COLORS.accent}
+                  style={{ marginRight: 8 }}
+                />
+                <Text style={styles.pauseOverlayPlanText}>{overlayPlanText}</Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              style={[
+                styles.pauseOverlayPrimary,
+                isEndOverlay && styles.pauseOverlayPrimaryEnd,
+              ]}
+              onPress={pauseOverlayPrimaryAction ?? (() => {})}
+              disabled={!pauseOverlayPrimaryAction}
+            >
+              <Text style={styles.pauseOverlayPrimaryText}>
+                {pauseOverlayPrimaryLabel || "Continue"}
               </Text>
             </Pressable>
-          ) : null}
-        </Animated.View>
-      </View>
-    ) : null}
 
-    {renderManualPrompt()}
-  </>
+            {pauseOverlaySecondaryLabel && pauseOverlaySecondaryAction ? (
+              <Pressable
+                style={styles.pauseOverlaySecondary}
+                onPress={pauseOverlaySecondaryAction}
+              >
+                <Text style={styles.pauseOverlaySecondaryText}>
+                  {pauseOverlaySecondaryLabel}
+                </Text>
+              </Pressable>
+            ) : null}
+          </Animated.View>
+        </View>
+      ) : null}
+
+      {renderManualPrompt()}
+    </>
   );
 }
 
@@ -1901,86 +1852,112 @@ const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
     paddingHorizontal: UI.pad,
-    paddingTop: 4,
+    paddingTop: isTablet ? 8 : 4,
     paddingBottom: 12,
+    maxWidth: isLargeTablet ? 1200 : isTablet ? 900 : undefined,
+    alignSelf: "center",
+    width: "100%",
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginBottom: isTablet ? 16 : 12,
   },
   iconButton: {
-    width: UI.avatar,
-    height: UI.avatar,
-    borderRadius: UI.avatar / 2,
+    width: moderateScale(48),
+    height: moderateScale(48),
+    borderRadius: moderateScale(24),
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: COLORS.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 3,
+      },
+      android: { elevation: 1 },
+    }),
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: moderateScale(20),
     fontWeight: "700",
     color: COLORS.text,
   },
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 10,
   },
   headerStatAction: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: moderateScale(12),
+    paddingVertical: moderateScale(8),
     borderRadius: UI.chipRadius,
-    backgroundColor: "rgba(37,99,235,0.12)",
-    marginRight: 10,
+    backgroundColor: COLORS.accentSoft,
+    gap: 6,
   },
   headerStatText: {
     color: COLORS.accent,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: moderateScale(13),
   },
   headerAction: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: moderateScale(12),
+    paddingVertical: moderateScale(8),
     borderRadius: UI.chipRadius,
-    backgroundColor: "rgba(220,38,38,0.08)",
+    backgroundColor: COLORS.dangerBg,
+    gap: 6,
   },
   headerActionText: {
     color: COLORS.danger,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: moderateScale(13),
   },
   overlayChip: {
     marginTop: 12,
+    marginBottom: 8,
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: moderateScale(14),
+    paddingVertical: moderateScale(8),
     borderRadius: UI.chipRadius,
-    backgroundColor: "rgba(37,99,235,0.12)",
+    backgroundColor: COLORS.accentSoft,
+    gap: 6,
   },
   overlayChipText: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     fontWeight: "600",
     color: COLORS.accent,
   },
   gameMetaCard: {
-    marginTop: 12,
+    marginTop: isTablet ? 8 : 4,
     borderRadius: UI.cardRadius,
     backgroundColor: COLORS.card,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: moderateScale(16),
+    paddingVertical: moderateScale(14),
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: { elevation: 2 },
+    }),
   },
   gameMetaLeft: {
     flex: 1,
@@ -1990,9 +1967,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginTop: 6,
+    gap: 12,
   },
   clockLabel: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: "600",
     color: COLORS.textMuted,
     textTransform: "uppercase",
@@ -2004,20 +1982,20 @@ const styles = StyleSheet.create({
   statusPill: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: moderateScale(10),
+    paddingVertical: moderateScale(6),
     borderRadius: UI.chipRadius,
   },
   statusLive: {
-    backgroundColor: "rgba(34,197,94,0.16)",
+    backgroundColor: COLORS.successBg,
   },
   statusPaused: {
-    backgroundColor: "rgba(220,38,38,0.12)",
+    backgroundColor: COLORS.dangerBg,
   },
   statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: moderateScale(6),
+    height: moderateScale(6),
+    borderRadius: moderateScale(3),
     marginRight: 6,
   },
   statusDotLive: {
@@ -2027,7 +2005,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.danger,
   },
   statusText: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     fontWeight: "600",
   },
   statusTextLive: {
@@ -2040,15 +2018,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     borderRadius: UI.chipRadius,
-    backgroundColor: "rgba(37,99,235,0.12)",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: COLORS.accentSoft,
+    paddingHorizontal: moderateScale(16),
+    paddingVertical: moderateScale(10),
   },
   pauseButtonActive: {
-    backgroundColor: "rgba(16,185,129,0.16)",
+    backgroundColor: COLORS.successBg,
   },
   pauseButtonText: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: "600",
     color: COLORS.accent,
   },
@@ -2062,10 +2040,10 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
   },
   clockValue: {
-    fontSize: 36,
+    fontSize: moderateScale(36),
     fontWeight: "800",
     color: COLORS.text,
-    marginRight: 12,
+    letterSpacing: -1,
   },
   clockValueCritical: {
     color: COLORS.danger,
@@ -2076,44 +2054,49 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   metaHint: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     color: COLORS.textMuted,
     fontWeight: "500",
   },
   subMessageSlot: {
-    marginTop: 10,
-    minHeight: 44,
+    marginTop: isTablet ? 14 : 10,
+    minHeight: moderateScale(44),
     justifyContent: "center",
     alignItems: "center",
   },
   clockHelper: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     color: COLORS.textMuted,
     textAlign: "center",
   },
   subCountdownBar: {
-    backgroundColor: "rgba(250,204,21,0.2)",
+    backgroundColor: COLORS.warnBg,
     borderRadius: UI.chipRadius,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: moderateScale(14),
+    paddingVertical: moderateScale(10),
     flexDirection: "row",
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.2)",
   },
   subCountdownText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: "600",
     color: COLORS.text,
     flexShrink: 1,
   },
   courtCard: {
-    marginTop: 16,
+    marginTop: isTablet ? 20 : 16,
     position: "relative",
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 260,
+    minHeight: moderateScale(260),
     width: "100%",
-    maxWidth: 380,
+    maxWidth: isTablet ? 480 : 380,
     alignSelf: "center",
+    backgroundColor: COLORS.courtBg,
+    borderRadius: UI.cardRadius,
+    paddingVertical: moderateScale(20),
   },
   courtImage: {
     ...StyleSheet.absoluteFillObject,
@@ -2125,17 +2108,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   avatarCourt: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: UI.avatar,
+    height: UI.avatar,
+    borderRadius: UI.avatar / 2,
     backgroundColor: COLORS.avatar,
     borderWidth: 2,
     borderColor: COLORS.accent,
     alignItems: "center",
     justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: { elevation: 3 },
+    }),
   },
   avatarCourtOutgoing: {
-    borderColor: COLORS.danger, // red ring for outgoing player
+    borderColor: COLORS.danger,
+    borderWidth: 3,
   },
   avatarCourtManualCandidate: {
     borderColor: COLORS.accentStrong,
@@ -2146,9 +2139,11 @@ const styles = StyleSheet.create({
   },
   playerName: {
     marginTop: 4,
-    fontSize: 12,
+    fontSize: moderateScale(12),
     color: COLORS.text,
-    fontWeight: "500",
+    fontWeight: "600",
+    textAlign: "center",
+    maxWidth: moderateScale(80),
   },
   arrowDownWrap: {
     marginTop: 8,
@@ -2156,16 +2151,18 @@ const styles = StyleSheet.create({
   },
   benchSection: {
     flex: 1,
-    marginTop: 18,
+    marginTop: isTablet ? 22 : 18,
+    minHeight: isShortDevice ? 120 : 140,
   },
   benchScroll: {
-    maxHeight: 150,
+    maxHeight: isTablet ? 180 : 150,
     marginTop: 4,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     borderRadius: UI.cardRadius,
-    paddingHorizontal: 12,
-    paddingVertical: 16,
+    paddingHorizontal: moderateScale(12),
+    paddingVertical: moderateScale(16),
+    backgroundColor: COLORS.card,
   },
   sectionHeader: {
     flexDirection: "row",
@@ -2174,27 +2171,27 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     color: COLORS.text,
     fontWeight: "700",
   },
   manualHint: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     color: COLORS.textMuted,
     fontWeight: "600",
-    maxWidth: 200,
+    maxWidth: isTablet ? 300 : 200,
     textAlign: "right",
   },
   manualHintWrap: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-end",
+    gap: 12,
   },
   manualCancel: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     color: COLORS.danger,
     fontWeight: "700",
-    marginLeft: 12,
   },
   benchRow: {
     flexDirection: "row",
@@ -2206,33 +2203,33 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 24,
+    paddingVertical: moderateScale(24),
     borderRadius: UI.cardRadius,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
-    backgroundColor: COLORS.card,
+    backgroundColor: COLORS.bg,
   },
   benchEmptyText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     color: COLORS.textMuted,
     textAlign: "center",
   },
   benchItem: {
     alignItems: "center",
-    marginRight: 16,
+    marginRight: moderateScale(16),
     position: "relative",
     paddingVertical: 4,
   },
   benchArrowSlot: {
-    height: 24,
+    height: moderateScale(24),
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 6,
   },
   avatarBench: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: moderateScale(44),
+    height: moderateScale(44),
+    borderRadius: moderateScale(22),
     backgroundColor: COLORS.avatar,
     borderWidth: 2,
     borderColor: COLORS.accent,
@@ -2241,56 +2238,62 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   avatarBenchIncoming: {
-    borderColor: COLORS.success, // green ring if they're about to go in
+    borderColor: COLORS.success,
   },
   avatarBenchManualCandidate: {
     borderColor: COLORS.accentStrong,
     borderWidth: 2,
   },
   avatarBenchManualMode: {
-    borderColor: COLORS.accentStrong, // thicker ring for the selected manual sub
+    borderColor: COLORS.accentStrong,
     borderWidth: 3,
   },
   benchName: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     color: COLORS.text,
     fontWeight: "600",
     textAlign: "center",
+    maxWidth: moderateScale(70),
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(15,23,42,0.45)",
+    backgroundColor: "rgba(15,23,42,0.5)",
     justifyContent: "center",
     alignItems: "center",
-    padding: 24,
+    padding: moderateScale(24),
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
   modalCard: {
     width: "100%",
-    maxWidth: 320,
-    borderRadius: 20,
+    maxWidth: moderateScale(320),
+    borderRadius: moderateScale(20),
     backgroundColor: COLORS.card,
-    paddingHorizontal: 20,
-    paddingVertical: 22,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    paddingHorizontal: moderateScale(20),
+    paddingVertical: moderateScale(22),
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.15,
+        shadowRadius: 16,
+      },
+      android: { elevation: 8 },
+    }),
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: "700",
     color: COLORS.text,
     textAlign: "center",
   },
   modalSubtitle: {
     marginTop: 8,
-    fontSize: 13,
+    fontSize: moderateScale(13),
     color: COLORS.textMuted,
     textAlign: "center",
-    lineHeight: 18,
+    lineHeight: moderateScale(18),
   },
   modalOptions: {
     marginTop: 18,
@@ -2299,27 +2302,19 @@ const styles = StyleSheet.create({
     borderRadius: UI.chipRadius,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: moderateScale(12),
+    paddingHorizontal: moderateScale(16),
   },
   modalOptionAccent: {
-    backgroundColor: "rgba(37,99,235,0.12)",
+    backgroundColor: COLORS.accentSoft,
     borderColor: "rgba(37,99,235,0.24)",
-    borderRadius: UI.chipRadius,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
   },
   modalOptionDanger: {
-    backgroundColor: "rgba(220,38,38,0.12)",
-    borderColor: "rgba(220,38,38,0.24)",
-    borderRadius: UI.chipRadius,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    backgroundColor: COLORS.dangerBg,
+    borderColor: "rgba(239,68,68,0.24)",
   },
   modalOptionText: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: "600",
     color: COLORS.text,
     textAlign: "center",
@@ -2332,48 +2327,57 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   modalCancelText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: "700",
     color: COLORS.danger,
   },
   pauseOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15,23,42,0.6)",
+    backgroundColor: "rgba(15,23,42,0.65)",
     justifyContent: "center",
     alignItems: "center",
-    padding: 24,
+    padding: moderateScale(24),
   },
   pauseOverlayCard: {
     width: "100%",
-    maxWidth: 340,
-    borderRadius: 28,
+    maxWidth: moderateScale(340),
+    borderRadius: moderateScale(28),
     backgroundColor: COLORS.card,
-    paddingHorizontal: 28,
-    paddingVertical: 32,
+    paddingHorizontal: moderateScale(28),
+    paddingVertical: moderateScale(32),
     alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.2,
+        shadowRadius: 24,
+      },
+      android: { elevation: 12 },
+    }),
   },
   pauseOverlayIconWrap: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "rgba(37,99,235,0.12)",
+    width: moderateScale(60),
+    height: moderateScale(60),
+    borderRadius: moderateScale(30),
+    backgroundColor: COLORS.accentSoft,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 18,
   },
   pauseOverlayIconWrapSuccess: {
-    backgroundColor: "rgba(16,185,129,0.18)",
+    backgroundColor: COLORS.successBg,
   },
   pauseOverlayTitle: {
-    fontSize: 20,
+    fontSize: moderateScale(20),
     fontWeight: "700",
     color: COLORS.text,
     textAlign: "center",
   },
   pauseOverlaySubtitle: {
     marginTop: 10,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: moderateScale(14),
+    lineHeight: moderateScale(20),
     color: COLORS.textMuted,
     textAlign: "center",
   },
@@ -2381,21 +2385,21 @@ const styles = StyleSheet.create({
     marginTop: 18,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(37,99,235,0.12)",
+    backgroundColor: COLORS.accentSoft,
     borderRadius: UI.chipRadius,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: moderateScale(16),
+    paddingVertical: moderateScale(10),
   },
   pauseOverlayPlanText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: "600",
     color: COLORS.accent,
   },
   pauseOverlayPrimary: {
     marginTop: 24,
     backgroundColor: COLORS.accent,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingVertical: moderateScale(12),
+    paddingHorizontal: moderateScale(24),
     borderRadius: UI.chipRadius,
     width: "100%",
     alignItems: "center",
@@ -2406,12 +2410,12 @@ const styles = StyleSheet.create({
   pauseOverlayPrimaryText: {
     color: "#FFF",
     fontWeight: "700",
-    fontSize: 15,
+    fontSize: moderateScale(15),
   },
   pauseOverlaySecondary: {
     marginTop: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: moderateScale(10),
+    paddingHorizontal: moderateScale(16),
     borderRadius: UI.chipRadius,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
@@ -2419,7 +2423,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   pauseOverlaySecondaryText: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: "600",
     color: COLORS.text,
   },
@@ -2427,9 +2431,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 16,
+    paddingHorizontal: moderateScale(20),
+    paddingTop: moderateScale(16),
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.card,
@@ -2438,19 +2441,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     borderRadius: UI.chipRadius,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: moderateScale(20),
+    paddingVertical: moderateScale(12),
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     backgroundColor: COLORS.card,
     flex: 1,
     justifyContent: "center",
     marginHorizontal: 6,
+    gap: 8,
   },
   secondaryDockText: {
-    marginLeft: 8,
     color: COLORS.accent,
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: moderateScale(14),
   },
 });

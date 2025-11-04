@@ -1,4 +1,3 @@
-// app/game-settings/lineup.tsx
 import Ionicons from "@expo/vector-icons/Ionicons";
 import * as Haptics from "expo-haptics";
 import { Stack, router } from "expo-router";
@@ -6,8 +5,10 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Dimensions,
   Easing,
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -15,6 +16,27 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { loadJSON, saveJSON } from "../../lib/storage";
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+// Enhanced device detection
+const isSmallDevice = SCREEN_WIDTH < 375;
+const isTinyDevice = SCREEN_WIDTH < 350;
+const isShortDevice = SCREEN_HEIGHT < 700;
+const isTablet = SCREEN_WIDTH >= 768;
+const isLargeTablet = SCREEN_WIDTH >= 1024;
+
+// Improved responsive scaling with better tablet support
+const scale = (size: number) => {
+  if (isLargeTablet) return size * 1.4;
+  if (isTablet) return size * 1.2;
+  const ratio = SCREEN_WIDTH / 375;
+  const clamped = Math.max(0.85, Math.min(ratio, 1.15));
+  return size * clamped;
+};
+
+const moderateScale = (size: number, factor = 0.5) =>
+  size + (scale(size) - size) * factor;
 
 type Player = { id: string; name: string };
 type StoredLineup = { starters: string[]; bench: string[] };
@@ -25,42 +47,37 @@ const KEYS = {
   lineup: "gameLineup",
 };
 
-const LAYOUT = {
-  pad: 24,
-  gap: 16,
-  avatar: 54,
-  avatarRing: 2,
-  stripAvatar: 54,
-};
-
 const COLORS = {
   text: "#0F172A",
   textMuted: "#64748B",
   bg: "#FFFFFF",
-  card: "#FFFFFF",
   accent: "#2563EB",
   accentSoft: "rgba(37,99,235,0.12)",
-  success: "#22C55E",
-  successSoft: "rgba(34,197,94,0.12)",
+  success: "#10B981",
+  successSoft: "rgba(16,185,129,0.12)",
+  warning: "#F59E0B",
+  danger: "#EF4444",
   divider: "rgba(15,23,42,0.06)",
-  tileBorder: "rgba(15,23,42,0.05)",
-  toastBg: "rgba(17,24,39,0.94)",
-  toastText: "#FFFFFF",
 };
 
 export default function LineupScreen() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [starters, setStarters] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const toastY = useState(new Animated.Value(60))[0];
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "success" | "warning" | "info";
+  } | null>(null);
+  const toastY = useState(new Animated.Value(80))[0];
 
   useEffect(() => {
     (async () => {
       const dbPlayers = await loadJSON<Player[]>(KEYS.players, []);
       const selectedIds = await loadJSON<string[]>(KEYS.selected, []);
-      const storedLineup =
-        await loadJSON<StoredLineup | null>(KEYS.lineup, null);
+      const storedLineup = await loadJSON<StoredLineup | null>(
+        KEYS.lineup,
+        null
+      );
 
       const playerMap = new Map(dbPlayers.map((p) => [p.id, p]));
       const availableIds = selectedIds.filter((id) => playerMap.has(id));
@@ -99,28 +116,36 @@ export default function LineupScreen() {
     })();
   }, []);
 
-  const showToast = (msg: string) => {
-    setToastMsg(msg);
+  const showToast = (
+    message: string,
+    type: "success" | "warning" | "info" = "info"
+  ) => {
+    setToast({ message, type });
 
     Animated.timing(toastY, {
       toValue: 0,
-      duration: 200,
-      easing: Easing.out(Easing.quad),
+      duration: 250,
+      easing: Easing.out(Easing.ease),
       useNativeDriver: true,
     }).start();
 
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
-      () => {}
-    );
+    Haptics.notificationAsync(
+      type === "warning"
+        ? Haptics.NotificationFeedbackType.Warning
+        : Haptics.NotificationFeedbackType.Success
+    ).catch(() => {});
 
-    setTimeout(() => {
-      Animated.timing(toastY, {
-        toValue: 60,
-        duration: 200,
-        easing: Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }).start(() => setToastMsg(null));
-    }, 1600);
+    setTimeout(
+      () => {
+        Animated.timing(toastY, {
+          toValue: 80,
+          duration: 250,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        }).start(() => setToast(null));
+      },
+      type === "warning" ? 2000 : 1500
+    );
   };
 
   const handleGo = async () => {
@@ -135,19 +160,22 @@ export default function LineupScreen() {
       bench: benchIds,
     });
 
-    router.push("/game-court");
+    showToast("Lineup saved! Let's play!", "success");
+    setTimeout(() => router.push("/game-court"), 800);
   };
 
   const toggleStarter = (id: string) => {
     setStarters((prev) => {
       const isStarter = prev.includes(id);
       if (isStarter) {
+        showToast("Moved to bench", "info");
         return prev.filter((x) => x !== id);
       }
       if (prev.length >= 5) {
-        showToast("Only five can start. Deselect someone first.");
+        showToast("Only 5 can start! Remove someone first", "warning");
         return prev;
       }
+      showToast("Added to starting 5", "success");
       return [...prev, id];
     });
   };
@@ -155,6 +183,7 @@ export default function LineupScreen() {
   const clearStarters = () => {
     if (starters.length === 0) return;
     setStarters([]);
+    showToast("Starting lineup cleared", "info");
   };
 
   const PlayerTile = ({ p }: { p: Player }) => {
@@ -169,11 +198,15 @@ export default function LineupScreen() {
           <Text style={styles.avatarInitial}>
             {p.name.trim()[0]?.toUpperCase() || "A"}
           </Text>
-          {isStarter ? (
+          {isStarter && (
             <View style={styles.avatarBadge}>
-              <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+              <Ionicons
+                name="checkmark"
+                size={moderateScale(10)}
+                color="#FFFFFF"
+              />
             </View>
-          ) : null}
+          )}
         </View>
         <Text style={styles.playerName} numberOfLines={1}>
           {p.name}
@@ -182,25 +215,32 @@ export default function LineupScreen() {
     );
   };
 
+  // Dynamic grid columns based on device
+  const numColumns = isLargeTablet ? 5 : isTablet ? 4 : isTinyDevice ? 2 : 3;
+  const gridKey = `grid-${numColumns}`;
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
         <View style={styles.screen}>
+          {/* Header */}
           <View style={styles.headerRow}>
             <Pressable
               onPress={() => router.back()}
-              hitSlop={10}
+              hitSlop={12}
               style={styles.navButton}
             >
-              <Ionicons name="chevron-back" size={20} color={COLORS.text} />
+              <Ionicons
+                name="chevron-back"
+                size={moderateScale(20)}
+                color={COLORS.text}
+              />
             </Pressable>
-            <View style={styles.headerTextWrap}>
-              <Text style={styles.heading}>Starting lineup</Text>
-            </View>
+            <Text style={styles.heading}>Starting Lineup</Text>
             <Pressable
               onPress={clearStarters}
-              hitSlop={10}
+              hitSlop={12}
               style={[
                 styles.resetButton,
                 starters.length === 0 && styles.resetButtonDisabled,
@@ -209,107 +249,94 @@ export default function LineupScreen() {
             >
               <Ionicons
                 name="refresh"
-                size={16}
-                color={
-                  starters.length === 0
-                    ? COLORS.textMuted
-                    : COLORS.accent
-                }
+                size={moderateScale(14)}
+                color={starters.length === 0 ? COLORS.textMuted : COLORS.accent}
               />
-              <Text
-                style={[
-                  styles.resetButtonText,
-                  starters.length === 0 && styles.resetButtonTextDisabled,
-                ]}
-              >
-                Reset
-              </Text>
+              {!isTinyDevice && (
+                <Text
+                  style={[
+                    styles.resetButtonText,
+                    starters.length === 0 && styles.resetButtonTextDisabled,
+                  ]}
+                >
+                  Clear
+                </Text>
+              )}
             </Pressable>
           </View>
 
-          <View style={styles.counterRow}>
-            <View style={styles.counterPill}>
-              <Text style={styles.counterText}>
-                {Math.min(starters.length, 5)} / 5 starters selected
-              </Text>
+          {/* Counter Bar */}
+          <View style={styles.counterBar}>
+            <View style={styles.counterLeft}>
+              <View style={styles.counterCircle}>
+                <Text style={styles.counterNumber}>
+                  {Math.min(starters.length, 5)}
+                </Text>
+              </View>
+              <Text style={styles.counterLabel}>of 5 selected</Text>
             </View>
-            <Text style={styles.counterHint}>
-              Green tiles open on court, blue stay bench ready.
-            </Text>
+            <Text style={styles.counterHint}>Tap players to set lineup</Text>
           </View>
 
+          {/* Player Grid */}
           <View style={styles.gridCard}>
-            <View pointerEvents="none" style={styles.scrollRail}>
-              <View style={styles.scrollRailTrack}>
-                <View style={styles.scrollRailThumb} />
-              </View>
-            </View>
             {loading ? (
               <View style={styles.loadingWrap}>
-                <ActivityIndicator color={COLORS.accent} />
+                <ActivityIndicator color={COLORS.accent} size="large" />
               </View>
             ) : players.length === 0 ? (
               <View style={styles.emptyWrap}>
                 <Ionicons
                   name="people-circle-outline"
-                  size={36}
+                  size={moderateScale(48)}
                   color={COLORS.textMuted}
-                  style={{ marginBottom: 10 }}
                 />
-                <Text style={styles.emptyTitle}>No players yet</Text>
+                <Text style={styles.emptyTitle}>No players selected</Text>
                 <Text style={styles.emptyText}>
-                  Head back and add your roster before setting a lineup.
+                  Go back and select players for today&apos;s game
                 </Text>
+                <Pressable
+                  onPress={() => router.back()}
+                  style={styles.emptyButton}
+                >
+                  <Text style={styles.emptyButtonText}>Add Players</Text>
+                </Pressable>
               </View>
             ) : (
               <FlatList
                 data={players}
                 keyExtractor={(item) => item.id}
-                numColumns={3}
+                numColumns={numColumns}
+                key={gridKey}
                 columnWrapperStyle={styles.gridRow}
                 contentContainerStyle={styles.gridContent}
                 showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => <PlayerTile p={item} />}
               />
             )}
-
-            {toastMsg ? (
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.toast,
-                  {
-                    opacity: toastY.interpolate({
-                      inputRange: [0, 60],
-                      outputRange: [1, 0],
-                    }),
-                    transform: [{ translateY: toastY }],
-                  },
-                ]}
-              >
-                <Ionicons
-                  name="alert-circle"
-                  size={18}
-                  color={COLORS.toastText}
-                  style={{ marginRight: 8 }}
-                />
-                <Text style={styles.toastText}>{toastMsg}</Text>
-              </Animated.View>
-            ) : null}
           </View>
 
+          {/* Starting 5 Preview */}
           <View style={styles.lineupCard}>
-            <View style={styles.lineupHeaderRow}>
-              <Text style={styles.lineupLabel}>Opening five preview</Text>
-              <View style={styles.lineupBadge}>
+            <View style={styles.lineupHeader}>
+              <View style={styles.lineupTitleRow}>
                 <Ionicons
-                  name="sparkles"
-                  size={14}
+                  name="star"
+                  size={moderateScale(16)}
                   color={COLORS.success}
-                  style={{ marginRight: 6 }}
                 />
-                <Text style={styles.lineupBadgeText}>Balanced start</Text>
+                <Text style={styles.lineupLabel}>Starting 5</Text>
               </View>
+              {starters.length === 5 && (
+                <View style={styles.readyBadge}>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={moderateScale(12)}
+                    color={COLORS.success}
+                  />
+                  <Text style={styles.readyText}>Ready</Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.lineupFive}>
@@ -333,11 +360,10 @@ export default function LineupScreen() {
                       <View style={styles.placeholder}>
                         <Ionicons
                           name="person-add"
-                          size={18}
+                          size={moderateScale(16)}
                           color={COLORS.textMuted}
-                          style={{ marginBottom: 4 }}
                         />
-                        <Text style={styles.placeholderLabel}>Empty slot</Text>
+                        <Text style={styles.placeholderLabel}>{index + 1}</Text>
                       </View>
                     )}
                   </View>
@@ -347,32 +373,60 @@ export default function LineupScreen() {
 
             <Pressable
               disabled={loading || starters.length < 5}
-              onPress={() => {
-                void handleGo();
-              }}
+              onPress={handleGo}
               style={[
                 styles.goButton,
-                loading || starters.length < 5
-                  ? styles.goButtonDisabled
-                  : null,
+                (loading || starters.length < 5) && styles.goButtonDisabled,
               ]}
               android_ripple={{ color: "rgba(255,255,255,0.25)" }}
             >
               <Text style={styles.goButtonText}>
                 {loading
-                  ? "Checking roster…"
+                  ? "Loading..."
                   : starters.length < 5
-                  ? "Select five"
-                  : "Start game"}
+                  ? `Select ${5 - starters.length} more`
+                  : "Start Game"}
               </Text>
               <Ionicons
-                name="chevron-forward"
-                size={16}
+                name="arrow-forward"
+                size={moderateScale(16)}
                 color="#FFFFFF"
                 style={{ marginLeft: 6 }}
               />
             </Pressable>
           </View>
+
+          {/* Toast */}
+          {toast && (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.toast,
+                toast.type === "success" && styles.toastSuccess,
+                toast.type === "warning" && styles.toastWarning,
+                {
+                  opacity: toastY.interpolate({
+                    inputRange: [0, 80],
+                    outputRange: [1, 0],
+                  }),
+                  transform: [{ translateY: toastY }],
+                },
+              ]}
+            >
+              <Ionicons
+                name={
+                  toast.type === "success"
+                    ? "checkmark-circle"
+                    : toast.type === "warning"
+                    ? "warning"
+                    : "information-circle"
+                }
+                size={moderateScale(18)}
+                color="#FFFFFF"
+              />
+              <Text style={styles.toastText}>{toast.message}</Text>
+            </Animated.View>
+          )}
         </View>
       </SafeAreaView>
     </>
@@ -386,154 +440,176 @@ const styles = StyleSheet.create({
   },
   screen: {
     flex: 1,
-    paddingHorizontal: LAYOUT.pad,
-    paddingBottom: 24,
+    paddingHorizontal: isLargeTablet
+      ? 48
+      : isTablet
+      ? 32
+      : isTinyDevice
+      ? 16
+      : isSmallDevice
+      ? 20
+      : 24,
+    paddingTop: Platform.select({ ios: 12, android: 16, default: 12 }),
+    paddingBottom: isShortDevice ? 16 : 20,
+    maxWidth: isTablet ? 900 : undefined,
+    alignSelf: "center",
+    width: "100%",
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 10,
-    marginBottom: 22,
+    marginBottom: isShortDevice ? 16 : isTablet ? 24 : 20,
   },
   navButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: moderateScale(40),
+    height: moderateScale(40),
+    borderRadius: moderateScale(20),
     backgroundColor: COLORS.accentSoft,
     alignItems: "center",
     justifyContent: "center",
-  },
-  headerTextWrap: {
-    flex: 1,
-    marginLeft: 16,
+    flexShrink: 0,
   },
   heading: {
-    fontSize: 22,
-    fontWeight: "800",
+    fontSize: moderateScale(22),
+    fontWeight: "700",
     color: COLORS.text,
-  },
-  subtitle: {
-    marginTop: 4,
-    fontSize: 13,
-    color: COLORS.textMuted,
+    flex: 1,
+    textAlign: "center",
   },
   resetButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: moderateScale(12),
+    paddingVertical: moderateScale(8),
     borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1.5,
     borderColor: COLORS.accent,
     flexDirection: "row",
     alignItems: "center",
+    gap: 4,
+    flexShrink: 0,
   },
   resetButtonDisabled: {
     borderColor: COLORS.divider,
   },
   resetButtonText: {
-    marginLeft: 6,
-    fontSize: 13,
+    fontSize: moderateScale(12),
     fontWeight: "600",
     color: COLORS.accent,
   },
   resetButtonTextDisabled: {
     color: COLORS.textMuted,
   },
-  counterRow: {
+  counterBar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 18,
+    marginBottom: isShortDevice ? 14 : isTablet ? 22 : 18,
+    paddingHorizontal: 4,
   },
-  counterPill: {
+  counterLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: moderateScale(10),
+  },
+  counterCircle: {
+    width: moderateScale(40),
+    height: moderateScale(40),
+    borderRadius: moderateScale(20),
     backgroundColor: COLORS.successSoft,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: COLORS.success,
   },
-  counterText: {
-    fontSize: 13,
-    fontWeight: "600",
+  counterNumber: {
+    fontSize: moderateScale(18),
+    fontWeight: "700",
     color: COLORS.success,
   },
+  counterLabel: {
+    fontSize: moderateScale(13),
+    fontWeight: "600",
+    color: COLORS.text,
+  },
   counterHint: {
-    flex: 1,
-    textAlign: "right",
-    fontSize: 12,
+    fontSize: moderateScale(11),
     color: COLORS.textMuted,
-    marginLeft: 12,
-  },
-  scrollRail: {
-    position: "absolute",
-    top: 12,
-    bottom: 12,
-    right: 0,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  scrollRailTrack: {
-    width: 4,
+    textAlign: "right",
     flex: 1,
-    borderRadius: 2,
-    backgroundColor: "rgba(15,23,42,0.08)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  scrollRailThumb: {
-    width: 4,
-    height: 28,
-    borderRadius: 2,
-    backgroundColor: "rgba(15,23,42,0.25)",
+    marginLeft: 8,
   },
   gridCard: {
     flex: 1,
-    paddingHorizontal: 6,
-    paddingTop: 6,
-    position: "relative",
+    paddingHorizontal: 4,
+    paddingTop: 8,
   },
   gridRow: {
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: LAYOUT.gap,
+    justifyContent:
+      isLargeTablet || isTablet
+        ? "flex-start"
+        : isTinyDevice
+        ? "space-around"
+        : "space-between",
+    marginBottom: isShortDevice ? 12 : isTablet ? 20 : 16,
+    paddingHorizontal: isTablet ? 8 : 0,
   },
   gridContent: {
-    paddingBottom: 24,
+    paddingBottom: 20,
   },
   loadingWrap: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
   },
   emptyWrap: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
-    paddingHorizontal: 24,
+    paddingHorizontal: 32,
+    gap: 12,
   },
   emptyTitle: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: moderateScale(16),
+    fontWeight: "700",
     color: COLORS.text,
-    marginBottom: 6,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     color: COLORS.textMuted,
     textAlign: "center",
+    lineHeight: 18,
+  },
+  emptyButton: {
+    marginTop: 8,
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: moderateScale(24),
+    paddingVertical: moderateScale(12),
+    borderRadius: 999,
+  },
+  emptyButtonText: {
+    color: "#FFFFFF",
+    fontSize: moderateScale(14),
+    fontWeight: "600",
   },
   playerTile: {
-    width: "30%",
+    width: isLargeTablet
+      ? "18%"
+      : isTablet
+      ? "23%"
+      : isTinyDevice
+      ? "45%"
+      : "30%",
     alignItems: "center",
-    marginBottom: LAYOUT.gap,
+    marginHorizontal: isTablet ? 8 : 0,
+    marginBottom: isTablet ? 4 : 0,
   },
   avatar: {
-    width: LAYOUT.avatar,
-    height: LAYOUT.avatar,
-    borderRadius: LAYOUT.avatar / 2,
+    width: moderateScale(56),
+    height: moderateScale(56),
+    borderRadius: moderateScale(28),
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
     backgroundColor: COLORS.accentSoft,
-    borderWidth: LAYOUT.avatarRing,
+    borderWidth: 2,
     borderColor: COLORS.accent,
   },
   avatarSelected: {
@@ -544,77 +620,73 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: -2,
     bottom: -2,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: moderateScale(18),
+    height: moderateScale(18),
+    borderRadius: moderateScale(9),
     backgroundColor: COLORS.success,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
   },
   avatarInitial: {
-    fontSize: 22,
+    fontSize: moderateScale(22),
     fontWeight: "700",
     color: COLORS.text,
   },
   playerName: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: 8,
+    fontSize: moderateScale(12),
     fontWeight: "600",
     color: COLORS.text,
     textAlign: "center",
-  },
-  toast: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 12,
-    backgroundColor: COLORS.toastBg,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  toastText: {
-    color: COLORS.toastText,
-    fontSize: 13,
-    fontWeight: "600",
+    maxWidth: moderateScale(80),
   },
   lineupCard: {
-    marginTop: 20,
-    borderRadius: 18,
-    paddingVertical: 18,
-    paddingHorizontal: 20,
-    backgroundColor: COLORS.card,
+    marginTop: isShortDevice ? 14 : isTablet ? 22 : 18,
+    borderRadius: isTablet ? 20 : 16,
+    paddingVertical: moderateScale(16),
+    paddingHorizontal: moderateScale(18),
+    backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "rgba(37,99,235,0.18)",
-    shadowColor: "rgba(15,23,42,0.08)",
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    borderColor: "rgba(37,99,235,0.15)",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
   },
-  lineupHeaderRow: {
+  lineupHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 12,
+  },
+  lineupTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   lineupLabel: {
-    fontSize: 15,
+    fontSize: moderateScale(14),
     fontWeight: "700",
     color: COLORS.text,
   },
-  lineupBadge: {
+  readyBadge: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    gap: 4,
+    paddingHorizontal: moderateScale(8),
+    paddingVertical: moderateScale(4),
     borderRadius: 999,
     backgroundColor: COLORS.successSoft,
   },
-  lineupBadgeText: {
-    fontSize: 11,
+  readyText: {
+    fontSize: moderateScale(11),
     fontWeight: "600",
     color: COLORS.success,
   },
@@ -622,16 +694,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 14,
+    paddingHorizontal: isTablet ? 12 : 0,
   },
   slot: {
-    width: LAYOUT.stripAvatar,
     alignItems: "center",
+    width: moderateScale(52),
   },
   stripAvatar: {
-    width: LAYOUT.stripAvatar,
-    height: LAYOUT.stripAvatar,
-    borderRadius: LAYOUT.stripAvatar / 2,
-    backgroundColor: COLORS.accentSoft,
+    width: moderateScale(52),
+    height: moderateScale(52),
+    borderRadius: moderateScale(26),
+    backgroundColor: COLORS.successSoft,
     borderWidth: 2,
     borderColor: COLORS.success,
     alignItems: "center",
@@ -639,46 +712,82 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   stripInitial: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: "700",
     color: COLORS.text,
   },
   slotName: {
-    fontSize: 12,
+    fontSize: moderateScale(10),
     color: COLORS.text,
     fontWeight: "600",
     textAlign: "center",
+    maxWidth: moderateScale(48),
   },
   placeholder: {
-    width: LAYOUT.stripAvatar,
-    height: LAYOUT.stripAvatar,
-    borderRadius: LAYOUT.stripAvatar / 2,
+    width: moderateScale(52),
+    height: moderateScale(52),
+    borderRadius: moderateScale(26),
     borderWidth: 2,
     borderColor: COLORS.divider,
+    borderStyle: "dashed",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: COLORS.accentSoft,
+    backgroundColor: "#F9FAFB",
     marginBottom: 6,
   },
   placeholderLabel: {
-    fontSize: 11,
+    fontSize: moderateScale(10),
     color: COLORS.textMuted,
+    marginTop: 2,
+    fontWeight: "600",
   },
   goButton: {
-    marginTop: 4,
     backgroundColor: COLORS.accent,
-    borderRadius: 14,
-    paddingVertical: 14,
+    borderRadius: 999,
+    paddingVertical: moderateScale(14),
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
+    minHeight: moderateScale(48),
   },
   goButtonDisabled: {
     backgroundColor: COLORS.accentSoft,
   },
   goButtonText: {
     color: "#FFFFFF",
-    fontSize: 15,
+    fontSize: moderateScale(15),
     fontWeight: "700",
+  },
+  toast: {
+    position: "absolute",
+    bottom: isShortDevice ? 180 : isTablet ? 220 : 200,
+    left: isLargeTablet ? 48 : isTablet ? 32 : isTinyDevice ? 16 : 20,
+    right: isLargeTablet ? 48 : isTablet ? 32 : isTinyDevice ? 16 : 20,
+    alignSelf: "center",
+    maxWidth: isTablet ? 500 : 400,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 12,
+    backgroundColor: "#1F2937",
+    paddingHorizontal: moderateScale(16),
+    paddingVertical: moderateScale(12),
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  toastSuccess: {
+    backgroundColor: "#059669",
+  },
+  toastWarning: {
+    backgroundColor: "#D97706",
+  },
+  toastText: {
+    color: "#FFFFFF",
+    fontSize: moderateScale(13),
+    fontWeight: "600",
+    flex: 1,
   },
 });
